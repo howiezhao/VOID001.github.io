@@ -22,6 +22,7 @@ kramdown:
 sass:
     style:          :compressed
 
+future:             TRUE
 # Other Params
 include:            [ "robots.txt" ]
 exclude:            [ "LICENSE", "README.md", "CNAME", "vendor", "Gemfile" ]

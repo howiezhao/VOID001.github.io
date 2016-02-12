@@ -1,6 +1,5 @@
 ---
-title: Markdown Cheatsheet Demo
-updated: 2015-09-04 22:43
+title: Markdown Cheatsheet DemoOOOOO
 ---
 
 > This is Markdown Cheatsheet Demo for **The Plain**, this Jekyll theme. Please check the raw content of this file for the markdown usage.
@@ -55,8 +54,10 @@ Let's say you have text that you want to refer with a footnote, you can do that 
 ## Code Blocks
 
 ```javascript
+
 var s = "JavaScript syntax highlighting";
 alert(s);
+
 ```
 
 ```python

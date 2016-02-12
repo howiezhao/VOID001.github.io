@@ -7,7 +7,7 @@ google_analytics:   UA-73703130-1 # Put your Google Analytics code
 # Author Info
 author_name:        "VOID001"
 author_email:       zhangjianqiu_133@yeah.net
-author_gravatar:    2b38b1b0e7e08b69379bd61582adf0c8 # Gravatar md5 hash
+author_gravatar:    2c230611acf61701a6666dd919b12073 # Gravatar md5 hash
 
 # Site Settings
 baseurl:            "" # Base URL must end WITHOUT a slash, default: ""

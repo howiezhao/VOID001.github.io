@@ -1,12 +1,12 @@
 ---
+
 layout: page
-title: About
+title: VOID's Notes
+
 ---
 
-Hello.
+用于记载在Coding的时候遇到的各种问题　__Wine__, __NEUOJ__, And Other Staffs
 
-The main purpose of this theme is to be as simple as it could be, so you can focus on writing your stuffs. This is your About page. You may describe about yourself here; who you are, what are you currently doing, share some of your projects, your social links and how people can contact you, etc.
+[VOID001's WOWO(WordPress)](http://voidword.sinaapp.com)
 
-**Just write thing that matters..**
-
-Enjoy!
+![pic](assets/shana.jpg)

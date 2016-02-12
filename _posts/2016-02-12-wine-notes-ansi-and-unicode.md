@@ -68,8 +68,8 @@ WCHAR sample_2[] = {'E', 'x', 'a', 'm', 'p', 'l', 'e', 0};
 
 ### *防止内存泄露*
 
-* 使用RtlInitAnsiString创建的字符串不需要手动Free
-* 使用RtlAnsiStringToUnicodeString, 并且 AllocateDestinationString 为 TRUE 的话需要手动释放内存
-* 使用wine_nt_to_unix_filename 得到的ANSI_STRING 需要手动释放内存
+* 使用`RtlInitAnsiString`创建的字符串不需要手动Free
+* 使用`RtlAnsiStringToUnicodeString`, 并且`AllocateDestinationString`为`TRUE`的话需要手动释放内存
+* 使用`wine_nt_to_unix_filename`得到的`ANSI_STRING`需要手动释放内存
 
 

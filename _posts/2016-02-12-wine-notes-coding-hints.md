@@ -2,11 +2,13 @@
 title: Wine Notes -- Coding Hints
 ---
 
-## About Coding Style
+## About Coding Style(Habit)
 
 * 代码风格模仿上下文的代码风格, 比如 wpcap.c 内所有的if语句风格都是if<space>(exp), 那么新写的代码也要是这个风格
 * 一定要使用恰当的变量类型, 例如`int status`要改为`NTSTATUS status`之类的
 * 在`TRACE` 的前后加入空行,增加代码的可读性
+* 在修改某一个bug的时候, 要保证将引起这个bug的所有代码, 以及和这个bug相关的所有代码修改掉, 多用grep
+* ok 宏测试到的参数就不需要trace输出了
 
 ## About Error Handling
 

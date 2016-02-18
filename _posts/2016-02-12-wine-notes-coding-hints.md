@@ -9,6 +9,8 @@ title: Wine Notes -- Coding Hints
 * 在`TRACE` 的前后加入空行,增加代码的可读性
 * 在修改某一个bug的时候, 要保证将引起这个bug的所有代码, 以及和这个bug相关的所有代码修改掉, 多用grep
 * ok 宏测试到的参数就不需要trace输出了
+* 函数定义一定要含有调用惯例(Coding Conventions) CDECL STDCALL..
+* 函数参数类型不要用 LP* P* 同时变量名也不要以p开头, 变量名常用全小写字母
 
 ## About Error Handling
 
@@ -23,6 +25,8 @@ title: Wine Notes -- Coding Hints
 * 当程序SEGFAULT的时候, 注意检查是否出现了 Double-free 的情况
 * 自己写的代码要注意避免memory leak, 所有手动分配的内存都要记得收回, 同时要注意WinAPI的说明, 有的函数也需要手动收回内存
 * 使用HeapAlloc而不是malloc分配内存, 使用HeapFreee而不是free释放内存
+* HeapAlloc 分配内存之后检查内存分配是否成功
+* 每一个return PATH 之前都要将内存Free掉
 * 不需要分配内存就能解决的问题就不要进行内存分配
 
 ## Handle Build Warning

@@ -11,6 +11,7 @@ title: Wine Notes -- Coding Hints
 * ok 宏测试到的参数就不需要trace输出了
 * 函数定义一定要含有调用惯例(Coding Conventions) CDECL STDCALL..
 * 函数参数类型不要用 LP* P* 同时变量名也不要以p开头, 变量名常用全小写字母
+* spec 文件里的 ordinal number 忽略掉 用 @ 代替, 现在已经不关心 ordinal number 了
 
 ## About Error Handling
 

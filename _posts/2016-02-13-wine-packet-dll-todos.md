@@ -19,3 +19,4 @@ title: Wine Packet.dll wpcap.dll TODO List
 `   1 0x7e7732ef __wine_spec_unimplemented_stub+0x2e(module="packet.dll", function="PacketOpenAdapter") [/home/void001/GitRepos/wine_opensource_dev/Wine_wpcap/winesrc/dlls/winecrt0/stub.c:34] in packet (0x0033a314) `
  - when using both wpcap.dll and packet.dll native(Windows dll) it cannot find interface, Cause when lookup the register key it will fail, Try to fake it with the correspond register key
  (Information about regkey entry start with "4d36e972" https://technet.microsoft.com/en-us/library/cc780532(v=ws.10).aspx)
+ > I should refer to PacketNtX not Packet9x source code when running packet.dll on wine

@@ -12,6 +12,10 @@ title: Wine Notes -- Coding Hints
 * 函数定义一定要含有调用惯例(Coding Conventions) CDECL STDCALL..
 * 函数参数类型不要用 LP* P* 同时变量名也不要以p开头, 变量名常用全小写字母
 * spec 文件里的 ordinal number 忽略掉 用 @ 代替, 现在已经不关心 ordinal number 了
+* TRACE 信息要尽量少(?)
+* if while for 后面加 空格 再加 "()"
+* if内只有一个语句的话不要加大括号
+* 给代码块和代码块之间加上一定的空行使得代码可读性更好
 
 ## About Error Handling
 
@@ -20,6 +24,7 @@ title: Wine Notes -- Coding Hints
 * 不要用十六进制数字表示错误, 用定义好的宏来表示 (e.g. 不要用 `0x3` 用 `ERROR_PATH_NOTFOUND`)
 * 不需要关注代码成功运行的时候错误代码是什么, 在代码运行正确的时候不会去考虑错误代码的问题
 * 不要自己做NTSTATUS -> ERROR Code 的映射, 直接使用函数 `RtlNtStatusToDosError` 即可
+* 注意Calling Convention 要对应上
 
 ## About Memory
 

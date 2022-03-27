@@ -2,7 +2,7 @@
 title: 将 vim 作为日常笔记本使用
 render_with_liquid: false
 ---
-===============
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 
@@ -172,7 +172,7 @@ vimwiki 支持多种语法，包括自己的语法 vimwiki, 并且对 markdown �
   sub,,script,,
 ```
 
-标题语法为 `= TITLE =` ，该标题为一级标题，二级标题则变为两个 “=”: `== SUB TITLE ==` 以此类推
+标题语法为 `= TITLE =` ，该标题为一级标题，二级标题则变为两个 “=”: `The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog) SUB TITLE The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)` 以此类推
 
 
 列表语法基本同 Markdown 一致 注意需要在每一个 Item 和 Mark 之间添加 Space

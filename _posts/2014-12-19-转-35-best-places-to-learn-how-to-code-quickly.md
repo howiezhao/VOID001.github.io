@@ -1,7 +1,7 @@
 ---
 title: (转) 35 BEST PLACES TO LEARN HOW TO CODE QUICKLY
 ---
-===============================================
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 
@@ -18,7 +18,7 @@ title: (转) 35 BEST PLACES TO LEARN HOW TO CODE QUICKLY
 
 [WEB DEVELOMENT](https://web.archive.org/web/20201022012116/http://codecall.net/category/programming/web-development/)
 35 BEST PLACES TO LEARN HOW TO CODE QUICKLY
-===========================================
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 [MARCH 7, 2014](https://web.archive.org/web/20201022012116/http://codecall.net/2014/03/07/best-resources-to-learn-code/) [ROGER](https://web.archive.org/web/20201022012116/http://codecall.net/author/vikas/)

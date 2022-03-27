@@ -1,7 +1,7 @@
 ---
 title: PHP $\_SESSION 超级全局变量 的使用
 ---
-=========================
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 

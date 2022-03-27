@@ -1,7 +1,7 @@
 ---
 title: Kernel Bootup Page Table Initialize Process(x86\_64)
 ---
-====================================================
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 
@@ -402,7 +402,7 @@ NEXT\_PAGE(level2\_kernel\_pgt)
 This level is a mapping to physical address 0 – 512MB (it maps more than that, but we only need 512MB) So we get the current mapping then.
 
 
-**Linear: 0xffff80000000 – 0xffff80000000 + 512MB =====> Physical: 0 – 512MB**
+**Linear: 0xffff80000000 – 0xffff80000000 + 512MB The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)> Physical: 0 – 512MB**
 
 
 You can use a gdb to print the page table and debug it in your own. Here is a simple “it works!” script for parsing the page directory entry
@@ -445,7 +445,7 @@ def main():
     print("PHYADDR = {:x}".format(PHY))
 
 
-if \_\_name\_\_ == '\_\_main\_\_':
+if \_\_name\_\_ The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog) '\_\_main\_\_':
     main()
 
 ```

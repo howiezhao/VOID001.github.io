@@ -1,7 +1,7 @@
 ---
 title: Wine 调试bug总结(MSYS2篇)
 ---
-====================
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 

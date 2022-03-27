@@ -1,7 +1,7 @@
 ---
 title: STATUS\_OBJECT\_TYPE\_MISMATCH的可能原因
 ---
-===================================
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 

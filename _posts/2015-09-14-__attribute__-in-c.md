@@ -1,7 +1,7 @@
 ---
 title: \_\_attribute\_\_ in C
 ---
-======================
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 
@@ -13,7 +13,7 @@ title: \_\_attribute\_\_ in C
 
 
 `__atrribute__` in C
-====================
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 Take a look at this code for example (in Cygwin master branch /winsup/cygwin/winsup.h)

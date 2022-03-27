@@ -1,7 +1,7 @@
 ---
 title: proxychains-ng 原理解析
 ---
-===================
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 
@@ -13,7 +13,7 @@ title: proxychains-ng 原理解析
 
 
 Preface
-=======
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 提起 proxychains 相信大家都并不陌生，这个程序可以方便的让你在终端使用 SOCKS5, SOCKS4, HTTP 等协议代理网络访问，而不需要为了转换 SOCKS5 协议再搭建一个 HTTP 的代理来使用 http\_proxy, https\_proxy 这些 Shell 内置的环境变量来访问网络了。不过 proxychains 并不对所有的应用程序有效，一个典型的情况是 Golang 编写的 程序是无法使用 proxychains 进行代理的。在使用 proxychains 的时候会报这样的错误:
@@ -29,7 +29,7 @@ dial tcp 224.0.0.1:80: connect: network is unreachable
 
 
 Shared Libraries
-================
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 Linux 下的很多程序都依赖着多种多样的**动态链接库(shared library)**，使用动态链接库既可以节省磁盘的空间大小（你编译出来的程序不会特别大），同时也会节省程序的运行内存，多个共享动态链接库的进程只需要一份库在内存中。若是静态链接的话，则每一个进程都要带一份库。通过 ls -l /usr/lib (根据发行版不同路径可能会有不同)即可看到很多动态链接库。
@@ -63,7 +63,7 @@ lrwxrwxrwx   1 root root        19 Aug  7 00:22 libzmf-0.0.so.0 -> libzmf-0.0.so
 
 
 Dynamic Loading Progress
-========================
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 本文重点在于讲解 proxychains 的原理，因而对 loader 部分只提及相关部分，下述过程并不是完整的程序加载过程
@@ -134,7 +134,7 @@ Special Environment Variable: LD\_PRELOAD
 
 
 Proxychains-ng 的原理
-==================
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 简单来说, proxychains-ng 就是 hook 了 libc 里提供的基本网络通讯函数
@@ -216,7 +216,7 @@ static void* load\_sym(char* symname, void* proxyfunc) {
 	} else {
 		PDEBUG("loaded symbol '%s'" " real addr %p  wrapped addr %p\n", symname, funcptr, proxyfunc);
 	}
-	if(funcptr == proxyfunc) {
+	if(funcptr The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog) proxyfunc) {
 		PDEBUG("circular reference detected, aborting!\n");
 		abort();
 	}
@@ -248,7 +248,7 @@ load\_sym 调用了 dlsym 并且将 dlsym 返回值返回，然后通过上面�
 
 
 ```
-	if(!((fam  == AF\_INET || fam == AF\_INET6) && socktype == SOCK\_STREAM))
+	if(!((fam  The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog) AF\_INET || fam The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog) AF\_INET6) && socktype The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog) SOCK\_STREAM))
 		return true\_connect(sock, addr, len);
 ```
 
@@ -335,7 +335,7 @@ gcc -fPIE -c open.c && gcc -shared -o libopen.so open.o
 
 
 Why Some Programs (e.g. Golang) Cannot Use It?
-==============================================
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 通过上文我们知道了，很多的 golang 程序都是静态链接的程序，当然不涉及到任何 shared library preload, 对于这些程序来说我们没有办法让他们使用 proxychains.
@@ -436,7 +436,7 @@ http.get: Get http://myip.ipip.net: dial tcp 224.0.0.1:80: connect: network is u
 
 
 A Way For Golang Programs to Use Proxychains
-============================================
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 这个问题的答案就是使用 [gccgo](https://web.archive.org/web/20210514123224/https://golang.org/doc/install/gccgo)
@@ -669,7 +669,7 @@ func connect(s int, addr *RawSockaddrAny, addrlen Socklen\_t) (err error) {
 
 
 Reference
-=========
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 * ld-linux man page
@@ -679,7 +679,7 @@ Reference
 
 
 Misc
-====
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 遗留问题: 在查看 LD\_DEBUG=bindings 的时候，我们可以看到这样一段奇怪的 bind: binding file /usr/lib/libproxychains4.so [0] to /usr/lib/libpthread.so.0 [0]: normal symbol `connect’ proxychains 的 connect 竟然 bind 到了 libpthread 上，这让我很费解，尝试了 LD\_DEBUG 看 curl 的 binding 也是最后到了 libpthread 上，这里就让我产生了一个悬而未解的问题: 莫非 proxychains 不仅仅 hook 了 libc 还 hook 了 libpthread? 我查看了 LD\_DEBUG=1 curl xxx.cn 的输出，发现所有的 connect symbol 都是解析到了 libpthread.so 上，也许，所有的 connect 都没有走 libc 而是走了 libpthread?z 这就是另一个问题了。

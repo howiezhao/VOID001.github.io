@@ -1,7 +1,7 @@
 ---
 title: ULK Chapter2 总结
 ---
-===============
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 
@@ -75,7 +75,7 @@ MMU通过Segment Unit与Paging Unit两个硬件电路将一个逻辑地址转为
 对段描述符的解释参考 [[不是科普向?] RE: 从零开始的操作系统开发 第二集](https://web.archive.org/web/20210614023315/https://voidisprogramer.com/linux/%e4%b8%8d%e6%98%af%e7%a7%91%e6%99%ae%e5%90%91-re-%e4%bb%8e%e9%9b%b6%e5%bc%80%e5%a7%8b%e7%9a%84%e6%93%8d%e4%bd%9c%e7%b3%bb%e7%bb%9f%e5%bc%80%e5%8f%91-%e7%ac%ac%e4%ba%8c%e9%9b%86.html) 中相应内容即可
 
 
-### Logical Addr ===> Linear Addr
+### Logical Addr The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)> Linear Addr
 
 
 逻辑地址的高16位为段选择符(Segment Selector)其余32位(或者64位)为偏移量(Offset)
@@ -98,7 +98,7 @@ MMU通过Segment Unit与Paging Unit两个硬件电路将一个逻辑地址转为
  
 
 
-### Linear Addr ==> Physical Addr
+### Linear Addr The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)> Physical Addr
 
 
 至此我们已经得到了线性地址，下面需要将线性地址通过分页单元转为物理地址，下面以基本的分页模型对分页进行解释
@@ -140,7 +140,7 @@ MMU通过Segment Unit与Paging Unit两个硬件电路将一个逻辑地址转为
 原理都是一样的，只不过分页级别变多了
 
 
-以上就是Logical Address ===> Physical Address的转换的大致流程
+以上就是Logical Address The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)> Physical Address的转换的大致流程
 
 
  

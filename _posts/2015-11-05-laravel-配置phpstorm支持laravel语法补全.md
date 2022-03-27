@@ -1,7 +1,7 @@
 ---
 title: (Laravel) 配置phpstorm支持laravel语法补全
 ---
-=================================
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 
@@ -212,6 +212,6 @@ Theme: [Nisarg](https://web.archive.org/web/20201020195154/https://wordpress.org
 /* <![CDATA[ */
 var screenReaderText = {"expand":"expand child menu","collapse":"collapse child menu"};
 /* ]]> */
-/* <![CDATA[ */EnlighterJS\_Config = {"selector":{"block":"pre.EnlighterJSRAW","inline":"code.EnlighterJSRAW"},"language":"generic","theme":"git","indent":2,"hover":"hoverEnabled","showLinenumbers":true,"rawButton":true,"infoButton":true,"windowButton":true,"rawcodeDoubleclick":true,"grouping":true,"cryptex":{"enabled":false,"email":"mail@example.tld"}};!function(){var a=function(a){var b="Enlighter Error: ";console.error?console.error(b+a):console.log&&console.log(b+a)};return window.addEvent?"undefined"==typeof EnlighterJS?void a("Javascript Resources not loaded yet!"):"undefined"==typeof EnlighterJS\_Config?void a("Configuration not loaded yet!"):void window.addEvent("domready",function(){EnlighterJS.Util.Init(EnlighterJS\_Config.selector.block,EnlighterJS\_Config.selector.inline,EnlighterJS\_Config)}):void a("MooTools Framework not loaded yet!")}();;/* ]]> */
+/* <![CDATA[ */EnlighterJS\_Config = {"selector":{"block":"pre.EnlighterJSRAW","inline":"code.EnlighterJSRAW"},"language":"generic","theme":"git","indent":2,"hover":"hoverEnabled","showLinenumbers":true,"rawButton":true,"infoButton":true,"windowButton":true,"rawcodeDoubleclick":true,"grouping":true,"cryptex":{"enabled":false,"email":"mail@example.tld"}};!function(){var a=function(a){var b="Enlighter Error: ";console.error?console.error(b+a):console.log&&console.log(b+a)};return window.addEvent?"undefined"The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)typeof EnlighterJS?void a("Javascript Resources not loaded yet!"):"undefined"The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)typeof EnlighterJS\_Config?void a("Configuration not loaded yet!"):void window.addEvent("domready",function(){EnlighterJS.Util.Init(EnlighterJS\_Config.selector.block,EnlighterJS\_Config.selector.inline,EnlighterJS\_Config)}):void a("MooTools Framework not loaded yet!")}();;/* ]]> */
 
             

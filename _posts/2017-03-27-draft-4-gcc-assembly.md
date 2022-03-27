@@ -1,7 +1,7 @@
 ---
 title: (Linux 0.11) Draft 4 GCC Assembly
 ---
-=================================
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 

@@ -1,7 +1,7 @@
 ---
 title: 空间红包谜题解法(Linux + base64 + HTTP Header + 摩尔斯电码)
 ---
-==============================================
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 
@@ -27,7 +27,7 @@ title: 空间红包谜题解法(Linux + base64 + HTTP Header + 摩尔斯电码)
 
 
 * 第一关
-=====
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 首先看第一关的内容, 网页本身查看源码并没有什么用处, 不过注意到标题, “请用桌面浏览器打开哦~” 桌面浏览器(即Chrome Firefox) 和一般的移动端浏览器的区别就是, 桌面浏览器支持开发者视图, 可以看到更多详细信息, 除了看到源码, 我们还可以看到cookie session storage等东西, 也包括请求的header, 而这一关的线索就藏在了header里, 在服务器Response你的Request的时候, 会在header里带上下一关的线索,  之后我在空间里也对第一关进行了提示, 有十多人在提示之后到达了第二关QAQ 比我预期的少了很多 附上第一关解决的截图(点击可查看大图) 图中的 HintURL 就是第二关的线索 [![](https://web.archive.org/web/20201020200834im_/http://120.27.97.96/wp-content/uploads/2016/02/Screenshot-from-2016-02-03-10-44-41.png "Level1 Solved")](https://web.archive.org/web/20201020200834/http://120.27.97.96/wp-content/uploads/2016/02/Screenshot-from-2016-02-03-10-44-41.png)
@@ -37,7 +37,7 @@ title: 空间红包谜题解法(Linux + base64 + HTTP Header + 摩尔斯电码)
 
 
 * 第二关
-=====
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 ( 列出服务器网站目录) 进入到第二关, 你会发现看到一个在线编译器, 以及这样一段提示想信息:
@@ -104,7 +104,7 @@ drwxr-xr-x  2 root root   4096 Nov  8 04:13 skin
 
 
 * 第三关
-=====
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 这是本谜题的最后一关了, 也是我制作的时候花时间最多的一关(毕竟第一次用CoolEdit 以前从来没玩过QAQ) 通过第二关的最后提示, 得到一个网址 : 在浏览器里访问改网址 得到类似下面的东西(仅截取部分做展示)

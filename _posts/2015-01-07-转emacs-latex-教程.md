@@ -2,7 +2,7 @@
 title: (转)Emacs+ Latex 教程
 render_with_liquid: false
 ---
-==================
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 
@@ -15,7 +15,7 @@ render_with_liquid: false
 
 
 Emacs + LaTeX 快速上手(原网址 http://cs2.swfc.edu.cn/~wx672/lecture\_notes/linux/latex/latex\_tutorial.html)
-=====================================================================================================
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 * 本教程完全针对本校D215机房Ubuntu系统中的Emacs和LaTeX配置。关于如何配置，请看[这里](https://web.archive.org/web/20190506155039/http://cs2.swfc.edu.cn/~wx672/lecture_notes/linux/install.html)。

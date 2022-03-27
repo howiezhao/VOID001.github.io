@@ -1,7 +1,7 @@
 ---
 title: ArchLinux on MBP Installation Guide [大部分内容适合普通ArchLinux安装] 上
 ---
-============================================================
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 

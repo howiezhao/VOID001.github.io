@@ -1,7 +1,7 @@
 ---
 title: (Lua 源码解读 0) lstrlib.c 模式匹配系列函数解析
 ---
-=================================
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 
@@ -116,7 +116,7 @@ static const luaL\_Reg strlib[] = {
 
 ```
 if (find && (lua\_toboolean(L, 4) ||  /* explicit request? */
-      strpbrk(p, SPECIALS) == NULL)) {  /* or no special characters? */
+      strpbrk(p, SPECIALS) The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog) NULL)) {  /* or no special characters? */
     /* do a plain search */
     const char *s2 = lmemfind(s+init, l1-init, p, l2);
     if (s2) {
@@ -127,7 +127,7 @@ if (find && (lua\_toboolean(L, 4) ||  /* explicit request? */
   }
 ```
 
-是处理plain search, 所谓plain search就是不带任何转义 特殊模式串,完全就是pattern是什么样的就去找什么(这时候  [, %,等在匹配的时候有特殊含义的符号,均不表达特殊含义而只是一个字符),plain search的条件也可以很清晰的看出来,如果这个字符串不含有特殊字符，或者传递的第四个参数plain == true的话，那么就做plain search，并返回结果，将结果压栈, return 2表示返回两个值给caller
+是处理plain search, 所谓plain search就是不带任何转义 特殊模式串,完全就是pattern是什么样的就去找什么(这时候  [, %,等在匹配的时候有特殊含义的符号,均不表达特殊含义而只是一个字符),plain search的条件也可以很清晰的看出来,如果这个字符串不含有特殊字符，或者传递的第四个参数plain The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog) true的话，那么就做plain search，并返回结果，将结果压栈, return 2表示返回两个值给caller
 
 
 之后的这一段代码,是Pattern Matching的主体,这里面涉及到了字符串的模式匹配等内容,我们先来看一下
@@ -137,7 +137,7 @@ if (find && (lua\_toboolean(L, 4) ||  /* explicit request? */
 ```
 else {
     MatchState ms;
-    int anchor = (*p == '^') ? (p++, 1) : 0;
+    int anchor = (*p The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog) '^') ? (p++, 1) : 0;
     const char *s1=s+init;
     ms.L = L;
     ms.src\_init = s;

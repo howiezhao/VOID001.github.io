@@ -1,7 +1,7 @@
 ---
 title: ZOJ 3707 Calculate Prime S 矩阵快速幂+Fibonacci的性质
 ---
-=============================================
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 
@@ -209,7 +209,7 @@ int main(void)
 		for(LL i=p[K];;i++)
 		{
 			ans=matrixQuickPow(i-1,X);
-			if(ans.m[0][0]%X==0)
+			if(ans.m[0][0]%XThe content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)0)
 			{
 				mem=i;
 				break;

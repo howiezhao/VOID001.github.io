@@ -1,7 +1,7 @@
 ---
 title: Pulseaudio 突然间没有声音
 ---
-==================
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 

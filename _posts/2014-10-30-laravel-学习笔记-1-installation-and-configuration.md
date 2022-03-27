@@ -1,7 +1,7 @@
 ---
 title: Laravel 学习笔记 #1 Installation and Configuration
 ---
-==============================================
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 
@@ -16,7 +16,7 @@ title: Laravel 学习笔记 #1 Installation and Configuration
 
 
 安装和配置
-=====
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 安装

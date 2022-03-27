@@ -1,7 +1,7 @@
 ---
 title: (Linux 0.11) Draft 5 虚拟内存管理(mm/memory.c)
 ---
-========================================
+The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)
 
 
 

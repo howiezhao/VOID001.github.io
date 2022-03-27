@@ -6,12 +6,12 @@ google_analytics:   UA-73703130-1 # Put your Google Analytics code
 
 # Author Info
 author_name:        "VOID001"
-author_email:       zhangjianqiu_133@yeah.net
+author_email:       contact@void-shana.moe
 author_gravatar:    2c230611acf61701a6666dd919b12073 # Gravatar md5 hash
 
 # Site Settings
 baseurl:            "" # Base URL must end WITHOUT a slash, default: ""
-permalink:          /notes/:title # Post permalink
+permalink:          /posts/:title # Post permalink
 timezone:           Asia/Shanghai # https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
 
 # Site Build
@@ -23,12 +23,14 @@ sass:
     style:          :compressed
 
 future:             TRUE
+
 # Other Params
 include:            [ "robots.txt" ]
 exclude:            [ "LICENSE", "README.md", "CNAME", "vendor", "Gemfile" ]
 gems:
   - jekyll-sitemap
   - jekyll-admin
+  - jekyll-feed
 
 compress_html:
     clippings:      all

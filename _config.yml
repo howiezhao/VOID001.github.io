@@ -37,7 +37,7 @@ liquid:
 
 compress_html:
     clippings:      all
-    ingore:
+    ignore:
         envs:       [ "test" ]
 
 defaults:

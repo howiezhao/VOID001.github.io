@@ -1,6 +1,6 @@
 # Site Info
-title:              "VOID's Notes"
-description:        "A Simple Note QWQ"
+title:              "VOID001's WOWO"
+description:        "Thinking, Coding, Improving"
 google_verify:      epFgX0s_0RM3CdjwFcsewfXzPov2g8s9ZBOLyaIUH-o # Put your Google Verification here
 google_analytics:   UA-73703130-1 # Put your Google Analytics code
 
@@ -28,6 +28,7 @@ include:            [ "robots.txt" ]
 exclude:            [ "LICENSE", "README.md", "CNAME", "vendor", "Gemfile" ]
 gems:
   - jekyll-sitemap
+  - jekyll-admin
 
 compress_html:
     clippings:      all

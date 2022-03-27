@@ -27,7 +27,7 @@ title: VOID's Notes
 
 联系方式
 
-mail: zhangjianqiu13 AT gmail DOT com || void001@archlinuxcn.org
+mail: `zhangjianqiu13 AT gmail DOT com` || `void001@archlinuxcn.org` || `contact@void-shana.moe`
 
 telegram: @V0ID001
 

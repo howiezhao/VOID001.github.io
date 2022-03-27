@@ -23,11 +23,11 @@ title: VOID's Notes
 
 曾就读于 Simon Fraser University
 
-现就职于字节跳动
+现就职于字节跳动(ByteDance)
 
 联系方式
 
-mail: `zhangjianqiu13 AT gmail DOT com` || `void001@archlinuxcn.org` || `contact@void-shana.moe`
+mail: `zhangjianqiu13 AT gmail DOT com` `void001@archlinuxcn.org` `contact@void-shana.moe`
 
 telegram: @V0ID001
 

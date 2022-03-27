@@ -33,7 +33,7 @@ gems:
   - jekyll-feed
 
 liquid:
-    error_mode: warn
+    error_mode: lax
 
 compress_html:
     clippings:      all

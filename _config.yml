@@ -26,11 +26,14 @@ future:             TRUE
 
 # Other Params
 include:            [ "robots.txt" ]
-exclude:            [ "LICENSE", "README.md", "CNAME", "vendor", "Gemfile" ]
+exclude:            [ "LICENSE", "README.md", "CNAME", "vendor", "Gemfile", "recover"]
 gems:
   - jekyll-sitemap
   - jekyll-admin
   - jekyll-feed
+
+liquid:
+    error_mode: warn
 
 compress_html:
     clippings:      all

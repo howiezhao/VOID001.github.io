@@ -27,7 +27,7 @@ future:             TRUE
 # Other Params
 include:            [ "robots.txt" ]
 exclude:            [ "LICENSE", "README.md", "CNAME", "vendor", "Gemfile", "recover"]
-gems:
+plugins:
   - jekyll-sitemap
   - jekyll-feed
 
@@ -57,4 +57,4 @@ defaults:
       layout:       "post"
 
 feed:
-  excerpt_only: true
+  path: "feed"

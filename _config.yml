@@ -25,8 +25,8 @@ sass:
 future:             TRUE
 
 # Other Params
-include:            [ "robots.txt" ]
-exclude:            [ "LICENSE", "README.md", "CNAME", "vendor", "Gemfile", "recover"]
+include:            [ "robots.txt", "CNAME" ]
+exclude:            [ "LICENSE", "README.md", "vendor", "Gemfile", "recover"]
 plugins:
   - jekyll-sitemap
   - jekyll-feed

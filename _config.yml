@@ -29,7 +29,6 @@ include:            [ "robots.txt" ]
 exclude:            [ "LICENSE", "README.md", "CNAME", "vendor", "Gemfile", "recover"]
 gems:
   - jekyll-sitemap
-  - jekyll-admin
   - jekyll-feed
 
 liquid:
@@ -56,3 +55,6 @@ defaults:
       type:         "posts"
     values:
       layout:       "post"
+
+feed:
+  excerpt_only: true

@@ -1,5 +1,6 @@
 ---
 title: 使用  sync point 对多线程应用进行可控的并发测试
+render_with_liquid: false
 date: '2022-04-09 22:00:27'
 ---
 

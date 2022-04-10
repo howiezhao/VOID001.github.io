@@ -2,7 +2,7 @@
 title:              "VOID001's WOWO"
 description:        "Thinking, Coding, Improving"
 google_verify:      epFgX0s_0RM3CdjwFcsewfXzPov2g8s9ZBOLyaIUH-o # Put your Google Verification here
-google_analytics:   UA-73703130-1 # Put your Google Analytics code
+google_analytics:   UA-73703130-2 # Put your Google Analytics code
 
 # Author Info
 author_name:        "VOID001"
@@ -19,10 +19,13 @@ highlighter:        rouge
 markdown:           kramdown
 kramdown:
     input:          GFM
+    syntax_highlighter: rouge
+
 sass:
     style:          :compressed
 
 future:             TRUE
+url: "https://void-shana.moe/"
 
 # Other Params
 include:            [ "robots.txt", "CNAME" ]
@@ -30,9 +33,6 @@ exclude:            [ "LICENSE", "README.md", "vendor", "Gemfile", "recover"]
 plugins:
   - jekyll-sitemap
   - jekyll-feed
-
-liquid:
-    error_mode: lax
 
 compress_html:
     clippings:      all
@@ -55,6 +55,7 @@ defaults:
       type:         "posts"
     values:
       layout:       "post"
+      render_with_liquid: false
 
 feed:
   path: "feed"

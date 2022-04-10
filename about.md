@@ -1,7 +1,7 @@
 ---
 
 layout: page
-title: VOID's Notes
+title: About
 
 ---
 

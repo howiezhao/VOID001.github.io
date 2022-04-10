@@ -4,3 +4,14 @@
 
 @import 'main';
 @import 'syntax';
+
+.footer-flex {
+    display: flex;
+    flex-direction: row;
+    justify-content: center;
+}
+
+a {
+    text-decoration: none;
+    border-bottom: none;
+}

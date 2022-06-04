@@ -1,0 +1,2438 @@
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.2.2">Jekyll</generator><link href="https://void-shana.moe//feed" rel="self" type="application/atom+xml" /><link href="https://void-shana.moe//" rel="alternate" type="text/html" /><updated>2022-06-04T21:59:22+08:00</updated><id>https://void-shana.moe//feed</id><title type="html">VOID001’s WOWO</title><subtitle>Thinking, Coding, Improving</subtitle><entry><title type="html">一个由错误的使用 String Piece 导致的 Use After Free 问题排查</title><link href="https://void-shana.moe//posts/string-piece-uaf" rel="alternate" type="text/html" title="一个由错误的使用 String Piece 导致的 Use After Free 问题排查" /><published>2022-06-04T00:00:00+08:00</published><updated>2022-06-04T00:00:00+08:00</updated><id>https://void-shana.moe//posts/string-piece-uaf</id><content type="html" xml:base="https://void-shana.moe//posts/string-piece-uaf"><![CDATA[<h1 id="tldr">TL;DR</h1>
+
+<ul>
+  <li>构造 <code class="language-plaintext highlighter-rouge">StringPiece</code> 的时候要保证他底层的 string 生命周期比 <code class="language-plaintext highlighter-rouge">StringPiece</code> 长</li>
+  <li>Address Sanitizer is your friend</li>
+  <li>From my friend: 人生苦短，请用 Clang</li>
+</ul>
+
+<h1 id="background">Background</h1>
+
+<p>StringPiece (or <code class="language-plaintext highlighter-rouge">absl::string_view</code> <code class="language-plaintext highlighter-rouge">std::string_view</code>) 他们都是为了让开发者可以访问而不持有(own) 一个字符串而准备的便利 utility，但是错误的使用他们可能会导致很危险的内存问题，我们来看下面这段代码</p>
+
+<p>（以 absl::string_view 在 C++14 上的实现为准）</p>
+
+<div class="language-cpp highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cp">#include</span> <span class="cpf">&lt;cstdio&gt;</span><span class="cp">
+#include</span> <span class="cpf">&lt;functional&gt;</span><span class="cp">
+#include</span> <span class="cpf">&lt;iostream&gt;</span><span class="cp">
+#include</span> <span class="cpf">&lt;string&gt;</span><span class="cp">
+#include</span> <span class="cpf">&lt;utility&gt;</span><span class="cp">
+#include</span> <span class="cpf">&lt;vector&gt;</span><span class="cp">
+#include</span> <span class="cpf">"absl/strings/string_view.h"</span><span class="cp">
+</span>
+<span class="k">typedef</span> <span class="n">std</span><span class="o">::</span><span class="n">pair</span><span class="o">&lt;</span><span class="n">absl</span><span class="o">::</span><span class="n">string_view</span><span class="p">,</span> <span class="n">absl</span><span class="o">::</span><span class="n">string_view</span><span class="o">&gt;</span> <span class="n">StringViewPair</span><span class="p">;</span>
+
+<span class="kt">int</span> <span class="nf">main</span><span class="p">(</span><span class="kt">void</span><span class="p">)</span> <span class="p">{</span>
+  <span class="n">std</span><span class="o">::</span><span class="n">string</span> <span class="n">s1</span><span class="p">;</span>
+  <span class="n">std</span><span class="o">::</span><span class="n">string</span> <span class="n">s2</span><span class="p">;</span>
+  <span class="n">s1</span> <span class="o">=</span> <span class="s">"Good Morning Evil </span><span class="se">\n</span><span class="s">"</span><span class="p">;</span>
+  <span class="n">s2</span> <span class="o">=</span> <span class="s">"Good Evening Evil </span><span class="se">\n</span><span class="s">"</span><span class="p">;</span>
+  <span class="n">StringViewPair</span> <span class="n">pair</span> <span class="o">=</span> <span class="n">std</span><span class="o">::</span><span class="n">make_pair</span><span class="p">(</span><span class="n">s1</span><span class="p">,</span> <span class="n">s2</span><span class="p">);</span>
+	<span class="n">printf</span><span class="p">(</span><span class="s">"%p %p %p %p</span><span class="se">\n</span><span class="s">"</span><span class="p">,</span> <span class="n">s1</span><span class="p">.</span><span class="n">data</span><span class="p">(),</span> <span class="n">s2</span><span class="p">.</span><span class="n">data</span><span class="p">(),</span> <span class="n">pair</span><span class="p">.</span><span class="n">first</span><span class="p">.</span><span class="n">data</span><span class="p">(),</span> <span class="n">pair</span><span class="p">.</span><span class="n">second</span><span class="p">.</span><span class="n">data</span><span class="p">());</span>
+	<span class="n">printf</span><span class="p">(</span><span class="s">"%s</span><span class="se">\n</span><span class="s">%s</span><span class="se">\n</span><span class="s">"</span><span class="p">,</span> <span class="n">pair</span><span class="p">.</span><span class="n">first</span><span class="p">.</span><span class="n">data</span><span class="p">(),</span> <span class="n">pair</span><span class="p">.</span><span class="n">second</span><span class="p">.</span><span class="n">data</span><span class="p">());</span>
+
+  <span class="k">return</span> <span class="mi">0</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>这段代码看起来稀松平常，首先创建了两个 string s1, s2, 在堆上分配了两个字符串的空间，然后使用这两个 string 作为参数传递给 <code class="language-plaintext highlighter-rouge">std::make_pair</code> 构造一个 <code class="language-plaintext highlighter-rouge">absl::string_view</code> 的 pair,</p>
+
+<p>运行这段代码，会发现输出的内容出现了乱码/不完整等问题，</p>
+
+<div class="language-bash highlighter-rouge"><div class="highlight"><pre class="highlight"><code>
+<span class="o">(</span>っ・ω・<span class="o">)</span>っ ./demo                                                                                                                                                                                                                                                                                                 remote ⚛
+Xі
+</code></pre></div></div>
+
+<p>这里的输出和我们的字符串完全对不上，敏锐的读者可能看到这里已经想到了是 pair.first / pair.second 的 data 指向的内存出现了问题，那我们先把各个 str 的 data 指针都打出来看看，按照我们的想法以及 <code class="language-plaintext highlighter-rouge">absl::string_view</code> 的实现，这个 <code class="language-plaintext highlighter-rouge">StringViewPair</code> 应该存了 s1, s2 的底层指针，但是打印出来的字符串却是 dirty 的</p>
+
+<div class="language-cpp highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">string_view</span> <span class="p">{</span>
+<span class="c1">// ...</span>
+
+<span class="k">template</span> <span class="o">&lt;</span><span class="k">typename</span> <span class="nc">Allocator</span><span class="p">&gt;</span>
+  <span class="n">string_view</span><span class="p">(</span>  <span class="c1">// NOLINT(runtime/explicit)</span>
+      <span class="k">const</span> <span class="n">std</span><span class="o">::</span><span class="n">basic_string</span><span class="o">&lt;</span><span class="kt">char</span><span class="p">,</span> <span class="n">std</span><span class="o">::</span><span class="n">char_traits</span><span class="o">&lt;</span><span class="kt">char</span><span class="o">&gt;</span><span class="p">,</span> <span class="n">Allocator</span><span class="o">&gt;&amp;</span> <span class="n">str</span>
+          <span class="n">ABSL_ATTRIBUTE_LIFETIME_BOUND</span><span class="p">)</span> <span class="k">noexcept</span>
+      <span class="c1">// This is implemented in terms of `string_view(p, n)` so `str.size()`</span>
+      <span class="c1">// doesn't need to be reevaluated after `ptr_` is set.</span>
+      <span class="c1">// The length check is also skipped since it is unnecessary and causes</span>
+      <span class="c1">// code bloat.</span>
+      <span class="o">:</span> <span class="n">string_view</span><span class="p">(</span><span class="n">str</span><span class="p">.</span><span class="n">data</span><span class="p">(),</span> <span class="n">str</span><span class="p">.</span><span class="n">size</span><span class="p">(),</span> <span class="n">SkipCheckLengthTag</span><span class="p">{})</span> <span class="p">{}</span>
+<span class="c1">// ...</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<h1 id="debugging">Debugging</h1>
+
+<p>首先，我们在上面的 sample 代码中添加一行代码 (上面的 sample 中已添加)</p>
+
+<div class="language-cpp highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">printf</span><span class="p">(</span><span class="s">"%p %p %p %p</span><span class="se">\n</span><span class="s">"</span><span class="p">,</span> <span class="n">s1</span><span class="p">.</span><span class="n">data</span><span class="p">(),</span> <span class="n">s2</span><span class="p">.</span><span class="n">data</span><span class="p">(),</span> <span class="n">pair</span><span class="p">.</span><span class="n">first</span><span class="p">.</span><span class="n">data</span><span class="p">(),</span> <span class="n">pair</span><span class="p">.</span><span class="n">second</span><span class="p">.</span><span class="n">data</span><span class="p">());</span>
+</code></pre></div></div>
+
+<p>在我本地的输出如下</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>0x60300000efe0 0x60300000efb0 0x60300000ef80 0x60300000ef50
+</code></pre></div></div>
+
+<p>我们发现 <code class="language-plaintext highlighter-rouge">s1.data()</code> 和 <code class="language-plaintext highlighter-rouge">pair.first.data()</code> 他们两个的内存地址并不相同，这说明，在 make pair 的时候，可能发生了内存拷贝，通过查阅 <a href="https://en.cppreference.com/w/cpp/utility/pair/make_pair">cppreference</a> 我们得到了如下的解释</p>
+
+<blockquote>
+  <p>The deduced types <code class="language-plaintext highlighter-rouge">V1</code> and <code class="language-plaintext highlighter-rouge">V2</code> are <a href="http://en.cppreference.com/w/cpp/types/decay">std::decay</a><T1>::type and [std::decay](http://en.cppreference.com/w/cpp/types/decay)<T2>::type (the usual type transformations applied to arguments of functions passed by value) unless application of [std::decay](https://en.cppreference.com/w/cpp/types/decay) results in [std::reference_wrapper](http://en.cppreference.com/w/cpp/utility/functional/reference_wrapper)<X> for some type `X`, in which case the deduced type is `X&amp;`.</X></T2></T1></p>
+
+</blockquote>
+
+<p>看起来，make_pair 在进行类型推断的时候，会将参数类型推断后，按照值的方式传递，而非按照引用的方式传递，因而在这个过程中，内存发生了拷贝</p>
+
+<p>分析 C++ 内存相关问题的利器就是 <strong>AddressSanitizer</strong> (ASAN), 我们挂上 ASAN 跑这个程序来看结果如何，在构建参数中添加 <code class="language-plaintext highlighter-rouge">-fsanitize=address</code> 后再次运行我们的代码，得到了如下的输出</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>0x60300000efe0 0x60300000efb0 0x60300000ef80 0x60300000ef50
+=================================================================
+==2649769==ERROR: AddressSanitizer: heap-use-after-free on address 0x60300000ef80 at pc 0x7f951d7295ce bp 0x7ffde4a9d470 sp 0x7ffde4a9cc20
+READ of size 2 at 0x60300000ef80 thread T0
+    #0 0x7f951d7295cd  (/usr/lib/x86_64-linux-gnu/libasan.so.3+0x8a5cd)
+    #1 0x7f951d729d8a in vprintf (/usr/lib/x86_64-linux-gnu/libasan.so.3+0x8ad8a)
+    #2 0x7f951d729e47 in __interceptor_printf (/usr/lib/x86_64-linux-gnu/libasan.so.3+0x8ae47)
+    #3 0x55c93507994e in main /data04/playground/cpp/string-piece-uaf/main.cc:19
+    #4 0x7f951b9472e0 in __libc_start_main (/lib/x86_64-linux-gnu/libc.so.6+0x202e0)
+    #5 0x55c935079669 in _start (/data04/playground/cpp/string-piece-uaf/build/demo+0x2669)
+
+0x60300000ef80 is located 0 bytes inside of 20-byte region [0x60300000ef80,0x60300000ef94)
+freed by thread T0 here:
+    #0 0x7f951d7621f0 in operator delete(void*) (/usr/lib/x86_64-linux-gnu/libasan.so.3+0xc31f0)
+    #1 0x55c935079e54 in std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::~pair() /usr/include/c++/6/bits/stl_pair.h:194
+    #2 0x55c9350798b3 in main /data04/playground/cpp/string-piece-uaf/main.cc:16
+    #3 0x7f951b9472e0 in __libc_start_main (/lib/x86_64-linux-gnu/libc.so.6+0x202e0)
+
+previously allocated by thread T0 here:
+    #0 0x7f951d761bf0 in operator new(unsigned long) (/usr/lib/x86_64-linux-gnu/libasan.so.3+0xc2bf0)
+    #1 0x7f951d018116 in void std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_construct&lt;char*&gt;(char*, char*, std::forward_iterator_tag) (/usr/lib/x86_64-linux-gnu/libstdc++.so.6+0x120116)
+    #2 0x7ffde4a9d5cf  (&lt;unknown module&gt;)
+    #3 0x5  (&lt;unknown module&gt;)
+
+SUMMARY: AddressSanitizer: heap-use-after-free (/usr/lib/x86_64-linux-gnu/libasan.so.3+0x8a5cd)
+Shadow bytes around the buggy address:
+  0x0c067fff9da0: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x0c067fff9db0: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x0c067fff9dc0: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x0c067fff9dd0: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x0c067fff9de0: fa fa fa fa fa fa fa fa fa fa fd fd fd fa fa fa
+=&gt;0x0c067fff9df0:[fd]fd fd fa fa fa 00 00 00 07 fa fa 00 00 00 07
+  0x0c067fff9e00: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x0c067fff9e10: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x0c067fff9e20: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x0c067fff9e30: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x0c067fff9e40: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+Shadow byte legend (one shadow byte represents 8 application bytes):
+  Addressable:           00
+  Partially addressable: 01 02 03 04 05 06 07
+  Heap left redzone:       fa
+  Heap right redzone:      fb
+  Freed heap region:       fd
+  Stack left redzone:      f1
+  Stack mid redzone:       f2
+  Stack right redzone:     f3
+  Stack partial redzone:   f4
+  Stack after return:      f5
+  Stack use after scope:   f8
+  Global redzone:          f9
+  Global init order:       f6
+  Poisoned by user:        f7
+  Container overflow:      fc
+  Array cookie:            ac
+  Intra object redzone:    bb
+  ASan internal:           fe
+  Left alloca redzone:     ca
+  Right alloca redzone:    cb
+==2649769==ABORTING
+</code></pre></div></div>
+
+<p>对于不熟悉 ASAN 的读者，上面的输出最初看可能有点难以理解，我们来关注一下重点部分</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>==2649769==ERROR: AddressSanitizer: heap-use-after-free on address 0x60300000ef80 at pc 0x7f951d7295ce bp 0x7ffde4a9d470 sp 0x7ffde4a9cc20
+</code></pre></div></div>
+
+<p>首先最前面列出了进程ID，然后是错误的类型 <code class="language-plaintext highlighter-rouge">heap-use-after-free</code> 是一个堆上内存在释放后又被使用的错误，具体的地址我们也可以看到，就是 <code class="language-plaintext highlighter-rouge">pair.first.data()</code> ，继续查看 ASAN 的输出</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>READ of size 2 at 0x60300000ef80 thread T0
+    #0 0x7f951d7295cd  (/usr/lib/x86_64-linux-gnu/libasan.so.3+0x8a5cd)
+    #1 0x7f951d729d8a in vprintf (/usr/lib/x86_64-linux-gnu/libasan.so.3+0x8ad8a)
+    #2 0x7f951d729e47 in __interceptor_printf (/usr/lib/x86_64-linux-gnu/libasan.so.3+0x8ae47)
+    #3 0x55c93507994e in main /data04/playground/cpp/string-piece-uaf/main.cc:19
+    #4 0x7f951b9472e0 in __libc_start_main (/lib/x86_64-linux-gnu/libc.so.6+0x202e0)
+    #5 0x55c935079669 in _start (/data04/playground/cpp/string-piece-uaf/build/demo+0x2669)
+
+</code></pre></div></div>
+
+<p>这里我们首先忽略 Stack Trace 信息，来看两个关键点</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>READ of size 2 at 0x60300000ef80 thread T0
+</code></pre></div></div>
+
+<p>说明了，这一个 <code class="language-plaintext highlighter-rouge">heap-use-after-free</code> 问题的触发是由读取这个内存而导致的，那么我们看一下这个内存在哪里被释放了</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>0x60300000ef80 is located 0 bytes inside of 20-byte region [0x60300000ef80,0x60300000ef94)
+freed by thread T0 here:
+    #0 0x7f951d7621f0 in operator delete(void*) (/usr/lib/x86_64-linux-gnu/libasan.so.3+0xc31f0)
+    #1 0x55c935079e54 in std::pair&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::~pair() /usr/include/c++/6/bits/stl_pair.h:194
+    #2 0x55c9350798b3 in main /data04/playground/cpp/string-piece-uaf/main.cc:16
+    #3 0x7f951b9472e0 in __libc_start_main (/lib/x86_64-linux-gnu/libc.so.6+0x202e0)
+</code></pre></div></div>
+
+<p>根据这个 Call Trace，我们能够对应到，在代码 <code class="language-plaintext highlighter-rouge">main.cc</code>  L16 的位置，这个 basic string （也就是 <code class="language-plaintext highlighter-rouge">std::string</code> 就被释放掉了。</p>
+
+<h1 id="analyze">Analyze</h1>
+
+<p>我们来回顾一下最初的代码片段，现在我们知道了, <code class="language-plaintext highlighter-rouge">std::make_pair</code> 会 copy 两个 string <code class="language-plaintext highlighter-rouge">s1</code> <code class="language-plaintext highlighter-rouge">s2</code>并且产生一个 <code class="language-plaintext highlighter-rouge">std::pair&lt;std::string, std::string&gt;</code> 将他们作为参数传递给等号左边的 <code class="language-plaintext highlighter-rouge">StringViewPair</code> ，而等号左边的 StringViewPair 不 own 这两块内存，只是保存一个到他们的 Reference，因而，当这个构造结束后，等号右边的 <code class="language-plaintext highlighter-rouge">std::pair&lt;std::string, std::string&gt;</code> 就被释放掉，因而这两个拷贝出来的 <code class="language-plaintext highlighter-rouge">std::string</code> 的内存也随之被释放掉（如 ASAN 的输出）</p>
+
+<p>因此就导致了 heap use after free 问题的发生</p>
+
+<h1 id="solution">Solution</h1>
+
+<h2 id="1">#1</h2>
+
+<p>因为 C++ 仅能根据右值进行类型推断，不像 Rust 那样聪明，可以根据右值以及该变量的使用方式进行类型推断，所以我们的解法之一就是，在 make pair 的时候给出类型</p>
+
+<div class="language-cpp highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">StringViewPair</span> <span class="n">pair</span> <span class="o">=</span> <span class="n">std</span><span class="o">::</span><span class="n">make_pair</span><span class="o">&lt;</span><span class="n">absl</span><span class="o">::</span><span class="n">string_view</span><span class="p">,</span> <span class="n">absl</span><span class="o">::</span><span class="n">string_view</span><span class="o">&gt;</span><span class="p">(</span><span class="n">s1</span><span class="p">,</span> <span class="n">s2</span><span class="p">);</span>
+</code></pre></div></div>
+
+<p>这样，在 make pair 的时候就会得知我们需要的是 <code class="language-plaintext highlighter-rouge">std::pair&lt;absl::string_view, absl::string_view&gt;</code> 而非 <code class="language-plaintext highlighter-rouge">std::pair&lt;std::string, std::string&gt;</code> , 从而直接根据所给的参数调用 <code class="language-plaintext highlighter-rouge">absl::string_view</code> 构造函数，将 s1, s2 转为 <code class="language-plaintext highlighter-rouge">const std::string&amp;</code> 传递给构造函数，避免了将 s1 s2 拷贝出一个临时的字符串</p>
+
+<h2 id="2">#2</h2>
+
+<p>但是上面这种改法会让你的 Linter 抱怨起来</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>build/explicit_make_pair: For C++11-compatibility, omit template arguments from make_pair OR use pair directly OR if appropriate, construct a pair directly
+</code></pre></div></div>
+
+<p>因而这里还有一种更为美观的改法，参考 cppreference 上面对于 <code class="language-plaintext highlighter-rouge">make_pair</code> 的描述，我们使用 <code class="language-plaintext highlighter-rouge">std::ref</code> 将两个对象 <code class="language-plaintext highlighter-rouge">s1</code> <code class="language-plaintext highlighter-rouge">s2</code>转换为 <code class="language-plaintext highlighter-rouge">std::string&amp;</code> （实际上是转换为 <code class="language-plaintext highlighter-rouge">reference_wrapper&lt;std::string&gt;</code> ），从而实现相同的效果并且避免了 Linter 的警告</p>
+
+<h1 id="misc">Misc</h1>
+
+<p>本文中展现的这个问题，是 StringPiece / string_view 的一个使用陷阱，并且目前没有很好的编译期检查出这种问题的方法</p>
+
+<p><a href="https://github.com/isocpp/CppCoreGuidelines/issues/1038">https://github.com/isocpp/CppCoreGuidelines/issues/1038</a></p>
+
+<p>Github 上对于此问题的讨论，最终止于</p>
+
+<blockquote>
+  <p>the use-after-free potential with <code class="language-plaintext highlighter-rouge">string_view</code>
+ is accounted for in the Lifetime profile, even if there may be bugs or limitations in preliminary implementations that mean it is not diagnosed.</p>
+
+</blockquote>
+
+<p>因而，在 C++ 开发中，<strong>将 address sanitizer 时刻保持开启，是很重要的</strong>，能够帮助我们发现很多编译期无法检查出的问题</p>
+
+<p>那么到这里了，本文还有一个结论没有解释</p>
+
+<blockquote>
+  <p>From my friend: 人生苦短，请用 Clang</p>
+
+</blockquote>
+
+<p>对一些奇怪的 GCC Clang 表现感兴趣的朋友可以继续阅读，单纯来了解 StringPiece pitfall 的朋友可以在这里停下了，下面要介绍的内容可能比较黑暗</p>
+
+<h2 id="darkness-moment">Darkness Moment</h2>
+
+<p>为了继续我们的旅程，我们需要大家有多种编译器，这时候就应该拿出 godbolt 在线编译器平台了</p>
+
+<p>因为我没能够在 godbolt 里成功引用 absl 并构建出二进制，在 godbolt 里将 absl::string_view 替换为了 leveldb 的 <code class="language-plaintext highlighter-rouge">Slice</code> ，因为各类 <code class="language-plaintext highlighter-rouge">string_view</code> 的实现，尤其是构造函数的实现都很类似，因而我们的问题在 <code class="language-plaintext highlighter-rouge">Slice</code> 上也可以得到复现</p>
+
+<p><a href="https://godbolt.org/z/rcvs55zfa">https://godbolt.org/z/rcvs55zfa</a></p>
+
+<p>上面这个链接里放了类似于我们本文中描述的 use after free 问题的代码，但是我们发现在 GCC 的某些特定版本下，ASAN 竟然没有报错</p>
+
+<p><img src="/assets/imgs/string-piece-uaf1.png" alt="" /></p>
+
+<p>而当我们稍加修改 L117, 去掉 “\n” 之后， asan 又输出了</p>
+
+<p><img src="/assets/imgs/string-piece-uaf2.png" alt="" /></p>
+
+<p>经过一番排查，发现，是由两个原因导致的</p>
+
+<ol>
+  <li>某些版本的 GCC（如 6.3）会将 <code class="language-plaintext highlighter-rouge">printf("%s\n");</code> 在编译时转变为对 <code class="language-plaintext highlighter-rouge">puts</code> 的调用(可以查看 godbolt 的汇编代码进行确认)</li>
+  <li>而 6.3 的 GCC 的 libasan.so 恰好没有对 <code class="language-plaintext highlighter-rouge">puts</code> 进行 hook</li>
+</ol>
+
+<p>因而导致了上述情况的发生，也就说明了 ASAN 并不是万能的，想要避免一切内存问题，还是要靠程序员自身的本事（🤦‍♀️）</p>
+
+<p>同时我们还注意到在 L114 行有一个注释，当使用 GCC 版本低于 5.0 时（如 4.9.3）这个字符串根本不会被 Copy，结果就导致了 <code class="language-plaintext highlighter-rouge">s1</code> 和 <code class="language-plaintext highlighter-rouge">pair.first</code> 指向了相同的字符串地址空间。这是因为在 GCC 5.0 以下，对于字符串拷贝的优化，GCC 使用的是 COW，也就是说，因为我们的代码在创建了 <code class="language-plaintext highlighter-rouge">pair.first</code> 后没有对字符串有任何写操作，因而他直接和 <code class="language-plaintext highlighter-rouge">s1</code> 共用了内存，也就没有 heap-use-after-free 这个问题了。</p>
+
+<h1 id="ending">Ending</h1>
+
+<p>本文的产出离不开几个朋友的帮助，感谢 Wei，可怜等朋友帮忙一起 Debug 奇怪的 ASAN 不能 work 的问题（真的 Debug 了两天才找出问题。。，本来这个博客只需要半天时间就写出来了，结果搞了两天）</p>]]></content><author><name></name></author><summary type="html"><![CDATA[TL;DR]]></summary></entry><entry><title type="html">使用 sync point 对多线程应用进行可控的并发测试</title><link href="https://void-shana.moe//posts/sync-point" rel="alternate" type="text/html" title="使用 sync point 对多线程应用进行可控的并发测试" /><published>2022-04-09T22:00:27+08:00</published><updated>2022-04-09T22:00:27+08:00</updated><id>https://void-shana.moe//posts/sync-point</id><content type="html" xml:base="https://void-shana.moe//posts/sync-point"><![CDATA[<blockquote>
+  <p>在测试多线程应用程序的时候，我们往往会构造一些多线程并发执行的 test case 用来测试是否有 race condition 或者 unexpected behavior 出现。通常情况下，开发者可能会将多个 function 并发执行 N 次，以此来判断最终结果是否符合预期，这可能对于大多数情况是足够的。但是，当我们已经通过排查问题发现了一个因为 race 的原因导致的 Bug 的时候，我们很难通过上述通常的方法去重现它。为了能够构造出运行顺序完全可控的并发场景测试 case，rocksdb  实现了一套测试工具 SyncPoint，以此来解决上面的这个问题。本文介绍 rocksdb SyncPoint 的使用方法，以及其实现原理。</p>
+</blockquote>
+
+<h1 id="syncpoint-api">SyncPoint API</h1>
+<p>首先介绍 SYNC POINT 的 API 接口, 接口定义在 <code class="language-plaintext highlighter-rouge">test_util/sync_point.h</code> 内：</p>
+
+<pre><code class="language-C++">void LoadDependency(const std::vector&lt;SyncPointPair&gt;&amp; dependencies);
+void SetCallBack(const std::string&amp; point,
+                const std::function&lt;void(void*)&gt;&amp; callback);
+void EnableProcessing();
+void DisableProcessing();
+void Process(const Slice&amp; point, void* cb_arg = nullptr);
+</code></pre>
+
+<p>SyncPoint 被作为一个单例定义在整个 Project 内，并提供如下几个宏定义简化用户的使用：</p>
+
+<ul>
+  <li><code class="language-plaintext highlighter-rouge">TEST_SYNC_POINT(name)</code>: 在代码中定义一个 SyncPoint</li>
+  <li><code class="language-plaintext highlighter-rouge">TEST_SYNC_POINT_CALLBACK(name, cbarg)</code>: 在代码中定义一个可以进行回调的 SYNC POINT, 回调函数 <code class="language-plaintext highlighter-rouge">cb</code> 通过 <code class="language-plaintext highlighter-rouge">SetCallback</code> 注册给该 SyncPoint, 并且在这个宏被执行的时候以 <code class="language-plaintext highlighter-rouge">cb(cbarg)</code> 的形式调用</li>
+  <li><code class="language-plaintext highlighter-rouge">TEST_IDX_SYNC_POINT(name, idx)</code>: 只是将 <code class="language-plaintext highlighter-rouge">TEST_SYNC_POINT</code> 中的 “name” 换成了 “name” + “idx” 的字符串, 其他实现与 <code class="language-plaintext highlighter-rouge">TEST_SYNC_POINT</code> 完全相同</li>
+</ul>
+
+<p>我们结合下面的例子介绍下 SyncPoint API 的使用方法</p>
+
+<h1 id="examples">Examples</h1>
+
+<h2 id="1-使用-syncpoint-实现多线程代码按照固定顺序执行">1. 使用 SyncPoint 实现多线程代码按照固定顺序执行</h2>
+
+<p>为了简化实现以及突出 SyncPoint 的使用，我们选用一个 Hello World 例子来介绍 SyncPoint: 使用两个并发运行的 Thread 按顺序输出 1 - 4 的数字</p>
+
+<pre><code class="language-CPP">void Fun1() {
+   printf("1\n");
+   TEST_SYNC_POINT("SyncPointDemo::Fun1:1");
+   TEST_SYNC_POINT("SyncPointDemo::Fun1:4");
+   printf("4\n");
+}
+
+void Fun2() {
+    TEST_SYNC_POINT("SyncPointDemo::Fun2:2");
+    printf("2\n");
+    printf("3\n");
+    TEST_SYNC_POINT("SyncPointDemo::Fun2:3");
+}
+</code></pre>
+
+<p>如上所示，是两个打印函数 Fun1, Fun2. 在上述两个函数中设置了总共 4 个 SyncPoint, 接下来我们需要编写测试来定义 SyncPoint 之间的依赖关系（先后顺序）：</p>
+
+<pre><code class="language-CPP">TEST(SyncPointDemoTest, SequentialPrintNumbers) {
+    ROCKSDB_NAMESPACE::SyncPoint::GetInstance()-&gt;EnableProcessing(); 
+    ROCKSDB_NAMESPACE::SyncPoint::GetInstance()-&gt;LoadDependency(
+        {{"SyncPointDemo::Fun1:1", "SyncPointDemo::Fun2:2"}, 
+         {"SyncPointDemo::Fun2:3", "SyncPointDemo::Fun1:4"}});
+    std::thread t1(Fun1);
+    std::thread t2(Fun2);
+    t1.join();
+    t2.join();
+    SyncPoint::GetInstance()-&gt;DisableProcessing();
+}
+</code></pre>
+
+<p>关注这里的 <code class="language-plaintext highlighter-rouge">LoadDependency</code> 函数，他接受一系列的 <code class="language-plaintext highlighter-rouge">SyncPointPair</code>, 每一个 <code class="language-plaintext highlighter-rouge">SyncPointPair</code> <code class="language-plaintext highlighter-rouge">{u, v}</code> 可以看作是一条有向边 ` [u] -&gt; [v] ` 表明 <code class="language-plaintext highlighter-rouge">u</code> 发生在 <code class="language-plaintext highlighter-rouge">v</code> 之前。 在实际开发中，我们为了方便在测试里引用预先定义好的大量 SyncPoint ，我们会对每一个 SyncPoint 赋予有意义的名字。这里我们就通过 <code class="language-plaintext highlighter-rouge">LoadDependency</code> 构建了如下的依赖关系</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>[SyncPointDemo::Fun1:1] -&gt; [SyncPointDemo::Fun2:2]
+[SyncPointDemo::Fun2:3] -&gt; [SyncPointDemo::Fun1:4]
+</code></pre></div></div>
+
+<p>而因为在同一个 Thread 内， <code class="language-plaintext highlighter-rouge">SyncPointDemo::Fun2:2</code> 一定会在 <code class="language-plaintext highlighter-rouge">SyncPointDemo::Fun2:3</code> 之前，所以四个 SyncPoint 的依赖关系图为一条链</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>[SyncPointDemo::Fun1:1] -&gt; [SyncPointDemo::Fun2:2] -&gt; [SyncPointDemo::Fun2:3] -&gt; [SyncPointDemo::Fun1:4]
+</code></pre></div></div>
+
+<p>因而，程序的最终输出受到 SyncPoint 的控制，会始终为 “1\n2\n3\n4\n”。
+<code class="language-plaintext highlighter-rouge">EnableProcessing</code> 函数会开启 SyncPoint 的功能，如果我们在测试入口处不调用这个函数，则 SyncPoint 不会生效，也就会看到乱序的输出结果。同理 <code class="language-plaintext highlighter-rouge">DisableProcessing</code> 停止 <code class="language-plaintext highlighter-rouge">SyncPoint</code> 的处理。</p>
+
+<h2 id="2-使用-test_sync_point_callback-实现在测试用例中控制特定函数的返回值">2. 使用 TEST_SYNC_POINT_CALLBACK 实现在测试用例中控制特定函数的返回值</h2>
+
+<p>在运行各种单元测试中，我们希望测试一些函数的异常返回情况是否能够被正确处理，而一个函数的异常返回情况可能有多种，因而我们也需要一种方便的编码手段+测试工具来注入不同的错误码，下面这段例子展示了如何通过 <code class="language-plaintext highlighter-rouge">TEST_SYNC_POINT_CALLBACK</code> 在特定测试中给某函数注入错误码:</p>
+
+<pre><code class="language-CPP">int do_somthing() {
+    int retval = 0;
+
+    // complex logic here
+    ...
+
+    // When executing to this point, the callback will be invoked with argument `retval`
+    TEST_SYNC_POINT_CALLBACK("SyncPointDemo::retval_inject", &amp;retval);
+
+    return retval;
+}
+</code></pre>
+
+<p>假定我们有一个函数 <code class="language-plaintext highlighter-rouge">do_something</code>, 他会完成若干工作后返回 <code class="language-plaintext highlighter-rouge">int</code> 类型的错误码给调用者，而调用者会根据不同的错误码进行不同的处理，我们现在希望在测试中覆盖掉错误码，让它在本测试中永远返回 <code class="language-plaintext highlighter-rouge">-1</code>, 则编写如下的测试代码：</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>TEST(SyncPointDemoTest, CallbackSetErrorCode) {
+    SyncPoint::GetInstance()-&gt;EnableProcessing();
+    std::function&lt;void(void*)&gt; cb = [] (void *arg) -&gt; void {
+      int *ptr = static_cast&lt;int *&gt;(arg);
+      *ptr = -1;
+    };
+    SyncPoint::GetInstance()-&gt;SetCallBack("SyncPointDemo::retval_inject", cb);
+
+    auto p = do_something();
+    ASSERT_EQ(p, -1);
+}
+</code></pre></div></div>
+
+<p>这个测试程序会通过测试，<code class="language-plaintext highlighter-rouge">p</code> 的值被改写为 <code class="language-plaintext highlighter-rouge">-1</code>. 我们来看 <code class="language-plaintext highlighter-rouge">SetCallback</code> 这个函数，它会对一个给定的 SyncPoint 设置 Callback 调用，Callback 函数的签名为 <code class="language-plaintext highlighter-rouge">void(void *)</code>, 因而我们编写了一个 lambda 函数 <code class="language-plaintext highlighter-rouge">cb</code> 对错误码进行改写，当上述函数 <code class="language-plaintext highlighter-rouge">do_something</code> 执行到 <code class="language-plaintext highlighter-rouge">TEST_SYNC_POINT_CALLBACK</code> 的时候，会调用 <code class="language-plaintext highlighter-rouge">cb</code> 并且将 <code class="language-plaintext highlighter-rouge">&amp;retval</code> 内存处的值修改为 <code class="language-plaintext highlighter-rouge">-1</code>. 以此方法实现了错误码的注入。</p>
+
+<p>SyncPoint 的灵活性使得它的功能远不止我所 Demo 的这些，rocksdb 在构建一些特定的 Transaction Sequence 的测试用例中也大量的使用了 Sync Point，同时 <code class="language-plaintext highlighter-rouge">TEST_SYNC_POINT_CALLBACK</code> 定义的 SyncPoint 的顺序也是可以 <code class="language-plaintext highlighter-rouge">LoadDependency</code> 控制的</p>
+
+<h1 id="syncpoint-internals">SyncPoint Internals</h1>
+
+<p>SyncPoint 的功能很强大，接下来看下他的实现, 他的基本原理是通过拓朴排序的方式, 从入度为 0 的 SyncPoint 执行并且随着执行的过程移除已经执行完毕的点，重复此过程直到所有的 SyncPoint 都被执行完毕, 当一个点不满足执行条件（入度为0）的时候就通过 conditional variable 将此线程置为 sleep 状态。</p>
+
+<p>核心函数为 <code class="language-plaintext highlighter-rouge">LoadDependency</code> 以及 <code class="language-plaintext highlighter-rouge">Process</code>, 我们上面说的所有 <code class="language-plaintext highlighter-rouge">TEST_SYNC_POINT_*</code> 宏都是最终去调用 <code class="language-plaintext highlighter-rouge">Process</code> 函数。</p>
+
+<h2 id="loaddependency">LoadDependency</h2>
+
+<pre><code class="language-CPP">void SyncPoint::Data::LoadDependency(const std::vector&lt;SyncPointPair&gt;&amp; dependencies) {
+  std::lock_guard&lt;std::mutex&gt; lock(mutex_);
+  successors_.clear();
+  predecessors_.clear();
+  cleared_points_.clear();
+  for (const auto&amp; dependency : dependencies) {
+    successors_[dependency.predecessor].push_back(dependency.successor);
+    predecessors_[dependency.successor].push_back(dependency.predecessor);
+    point_filter_.Add(dependency.successor);
+    point_filter_.Add(dependency.predecessor);
+  }
+  cv_.notify_all();
+}
+</code></pre>
+
+<p><code class="language-plaintext highlighter-rouge">successor_</code> 与 <code class="language-plaintext highlighter-rouge">predecessor_</code> 都是 unordered_map, 通过这两个 hash map 存储了点之间的关系, <code class="language-plaintext highlighter-rouge">successor_[x] = y</code> 意味着 <code class="language-plaintext highlighter-rouge">x -&gt; y</code> 这样一条边，而 <code class="language-plaintext highlighter-rouge">predecessor_[x] = y</code> 意味着 <code class="language-plaintext highlighter-rouge">y -&gt; x</code> 这样一条边. <code class="language-plaintext highlighter-rouge">point_filter</code> 我们放到后面来讲.</p>
+
+<h2 id="process">Process</h2>
+<p>接下来我们看 Process 函数, 因为函数较长，就不贴过来了, 这里放一个源码链接</p>
+
+<p><a href="https://github.com/facebook/rocksdb/blob/678ba5e41cc7ae62a7d99a8307c2477f4de6d5d2/test_util/sync_point_impl.cc#L104">Source Code</a></p>
+
+<p>首先我们来看 <code class="language-plaintext highlighter-rouge">point_filter_</code>, 它是一个 <code class="language-plaintext highlighter-rouge">BloomFilter</code> ，用来过滤掉一些完全不存在的 SyncPoint, 提前结束 <code class="language-plaintext highlighter-rouge">Process</code> 流程以免不必要的 mutex lock。
+跳过 Marker 的逻辑，我们可以看到一个 <code class="language-plaintext highlighter-rouge">PredecessorsAllCleared</code> 函数，它会去检查是否该节点的所有前置节点都已经执行完毕（执行完毕的节点会被插入到 <code class="language-plaintext highlighter-rouge">cleared_points_</code> 这个集合中），如果没有执行完毕，则该 SyncPoint 的执行就会阻塞在条件变量 <code class="language-plaintext highlighter-rouge">cv</code> 上, 否则就继续执行后续逻辑。
+接下来会根据注册的 Callback 对此 SyncPoint 调用相应的 Callback。也就是上述例子 2 中解释的流程。
+最后，因为这个点能够被执行已经表明它没有任何前置节点没有被执行，它自己也已经执行完毕，把它自己加入到 <code class="language-plaintext highlighter-rouge">cleared_points_</code> 里，以此简化了拓扑排序中需要计算每个节点的入度这一过程，很是巧妙</p>
+
+<h2 id="misc">Misc</h2>
+
+<p>另外，rocksdb 仅会在 DEBUG 模式下生成 SyncPoint 相关的代码. 保证了代码在 Release 模式下的性能完全不受到影响。</p>
+
+<h1 id="final">Final</h1>
+
+<p>本文介绍了如何构造执行顺序确定的并发测试用例，介绍了 rocksdb 的一种确定性调试工具 SyncPoint 以及其用法和原理。在 Rocksdb 内，除了 SyncPoint 这种测试工具，还提供了 FailPoint 以及 KillPoint 等用来模拟在代码执行到特定情况下产生特定错误，接收到特定信号等测试工具。对于存储系统的代码来说，拥有足量的可回归的测试用例是非常重要的，同时一个复杂的存储系统涉及到事务，前后台线程交互等复杂逻辑，而 RocksDB 通过提供上述工具为开发者降低了测试代码的编写负担，也保证了系统的可靠性。
+同时感谢我的同事在公司分享了 SyncPoint 这样的工具，因为有了同事的介绍才会有本篇文章，希望这个简单易用的工具能够帮助更多开发者写出更加完备的测试。</p>]]></content><author><name></name></author><summary type="html"><![CDATA[在测试多线程应用程序的时候，我们往往会构造一些多线程并发执行的 test case 用来测试是否有 race condition 或者 unexpected behavior 出现。通常情况下，开发者可能会将多个 function 并发执行 N 次，以此来判断最终结果是否符合预期，这可能对于大多数情况是足够的。但是，当我们已经通过排查问题发现了一个因为 race 的原因导致的 Bug 的时候，我们很难通过上述通常的方法去重现它。为了能够构造出运行顺序完全可控的并发场景测试 case，rocksdb 实现了一套测试工具 SyncPoint，以此来解决上面的这个问题。本文介绍 rocksdb SyncPoint 的使用方法，以及其实现原理。]]></summary></entry><entry><title type="html">Recover My Blog</title><link href="https://void-shana.moe//posts/recover-my-blog" rel="alternate" type="text/html" title="Recover My Blog" /><published>2022-03-27T00:00:00+08:00</published><updated>2022-03-27T00:00:00+08:00</updated><id>https://void-shana.moe//posts/recover-my-blog</id><content type="html" xml:base="https://void-shana.moe//posts/recover-my-blog"><![CDATA[<h1 id="tldr">TL;DR</h1>
+
+<p>我的博客因为欠费 Gone 了，谢天谢地，通过 Archive 和 Google Analytics 我成功恢复了主要的 Content 和 Comments</p>
+
+<h1 id="todos">TODOs</h1>
+
+<ul class="task-list">
+  <li class="task-list-item"><input type="checkbox" class="task-list-item-checkbox" disabled="disabled" checked="checked" />Recover my major content from archive</li>
+  <li class="task-list-item"><input type="checkbox" class="task-list-item-checkbox" disabled="disabled" checked="checked" />Make Jekyll work again for my static blog</li>
+  <li class="task-list-item"><input type="checkbox" class="task-list-item-checkbox" disabled="disabled" checked="checked" />Add comments plugin</li>
+  <li class="task-list-item"><input type="checkbox" class="task-list-item-checkbox" disabled="disabled" />Add RSS feed</li>
+  <li class="task-list-item"><input type="checkbox" class="task-list-item-checkbox" disabled="disabled" />Add tag and category support</li>
+</ul>
+
+<h1 id="background">Background</h1>
+
+<p><img src="/assets/imgs/blog-is-gone.png" alt="pic" /></p>
+
+<p>几天前，我发现我的服务器 RSS 拉取长期失败, 心想：肯定是服务器欠费了 ,于是准备去续费, 结果我登陆了我服务器的 Console 错愕的发现，我的服务器已经被 Terminated 了，意味着数据全部 Lost, 我服务器上跑的 TODOBot TTSBot 等无法服务了不说，更重要的是我的 Blog 和我的网盘的数据都丢失了，虽然我的 Blog 有备份，但是备份设备目前不在身边，短期内因为疫情也没法拿到备份盘。顿时感觉事情不妙，好在小伙伴们发现，尽管我的博客服务器 Down 了，但是有部分 Content（访问比较频繁的）被 Archive 存下来了，这才让我稍稍松一口气。因为短期之内没有再次续一个服务器的打算，这次准备将博客就趁这个机会迁移到静态站点上。</p>
+
+<p>同时，我想起来之前我有一个 Github Page repo (也就是这个 Page 所在 Repo), 我可以将它重新启用起来，并且把热门/重要文章加入到这个 Repo 中</p>
+
+<p>于是就有了今天的 <strong>从 Archive &amp; Google Analytics 恢复我的博客</strong></p>
+
+<h1 id="prepare">Prepare</h1>
+
+<p><img src="/assets/imgs/ga-void-shana.jpg" alt="pic" />
+<img src="/assets/imgs/archive-void-shana.png" alt="pic" /></p>
+
+<p>通过 Archive 和 Google Analytics 我获得了博客的访问信息和历史数据, 同时 Google Analytics 虽然没有提供 API 可以获取到访问最多的 Pages, 但是可将统计数据导出为 CSV, 这样 我们就可以根据这个被访问的页面列表，来从 web archive 上尽可能地恢复相应的 Post 了</p>
+
+<p>我写了一个简单的脚本，读取 CSV 里的 URL 和 Impressions 值，按照 Impressions 由高到低的顺序依次去 Web Archive 获取历史数据: 通过访问 <code class="language-plaintext highlighter-rouge">https://web.archive.org/{your_site_url_here}</code>, 即可获得这个 URL 对应的最新的一个 Archive 快照（如果有的话）</p>
+
+<h1 id="convert-to-markdown-with-frontmatters">Convert to Markdown with FrontMatters</h1>
+
+<p>现在可以通过 Web Archive 获取到网页快照了，可是静态站点生成器如 GithubPages 默认使用的 Jekyll, 用的是 Markdown 而不是 Rich Text 或者 HTML, 我们需要使用另一个工具对 Markdown 进行转换，在网上可以找到各种实现的 HTML 2 Markdown converter, 因为我们使用的 Python 编写获取 Archive page 脚本，自然也就选用了 Python 的一个 Library: <a href="https://github.com/mixmark-io/turndown">turndown</a>. 通过此插件将文章 HTML 转成 Markdown。</p>
+
+<p>但是他转换出来的文章内容带有大量我不需要的 CSS 和 JS 等文本，同时因为我的 Wordpress Blog 页面上有着友情链接，分类文本，等多种区块，并不适应 Markdown 文本的展示，需要去掉他们，又简单的写了一个 purify_markdown 的 function, 从已有的 markdown 内容中提取出 Post 的时间，标题，和正文，以及评论</p>
+
+<p>其中时间，标题等信息是 Jekyll 解析 Post 必不可少的内容，而正文和评论，是我最希望留下的两部分内容. 在运行这个脚本的时候，偶然发现 turndown 可能有一些 Bug: 对于一部分 Comment 内容，Convert 出来的 Markdown 对比原文缺少了若干行内容</p>
+
+<p>原文内容:
+<img src="/assets/imgs/recover-my-blog-bug0.jpg" alt="p" /></p>
+
+<p>转换后:
+<img src="/assets/imgs/recover-my-blog-bug1.jpg" alt="p" /></p>
+
+<p>最后，这个脚本在每个 Markdown 的开头处增加 “FrontMatter” 也就是文章元数据，使得文章可以被 Jekyll Parse.</p>
+
+<h1 id="compatibility-issues">Compatibility Issues</h1>
+
+<p>通过上一个步骤，我们已经获得了这些 Markdown 文件，下一步就是生成静态站点，在本地测试 <code class="language-plaintext highlighter-rouge">jekyll serve</code> 发现报错</p>
+
+<p><img src="/assets/imgs/recover-jekyll-exception.jpg" alt="p" /></p>
+
+<p>这个问题的原因是因为我的文本中有一些正文带有 <code class="language-plaintext highlighter-rouge">{{  }}</code> (对，比如本文现在也带有了 XD), 通过查阅资料发现可以通过指定一个 Flag(jekyll &gt; 4.0 有效) <code class="language-plaintext highlighter-rouge">render_with_liquid: false</code> 来关闭某些文章对 Liquid 的渲染, 但是 Github Page 默认的 Jekyll 版本还是 &lt; 4.0 不支持这个 Flag 的, 于是我只好抛弃了 Github 原生的 Github Page Generator, 采用 Github Action 自定义生成规则，并且为后续换用其他 Static Site Generator 提供条件.</p>
+
+<h1 id="miscs">Miscs</h1>
+
+<p>作为一个博客，我希望他是能够让他人进行 comment 并且互动的，因而我选用了 (giscus)[https://giscus.app/] 作为静态站点博客的评论工具, 同时保留了历史评论在文章正文中。</p>]]></content><author><name></name></author><summary type="html"><![CDATA[TL;DR]]></summary></entry><entry><title type="html">Customize Your Zsh Prompt</title><link href="https://void-shana.moe//posts/customize-your-zsh-prompt" rel="alternate" type="text/html" title="Customize Your Zsh Prompt" /><published>2019-06-02T00:00:00+08:00</published><updated>2019-06-02T00:00:00+08:00</updated><id>https://void-shana.moe//posts/customize-your-zsh-prompt</id><content type="html" xml:base="https://void-shana.moe//posts/customize-your-zsh-prompt"><![CDATA[<p>The content is recoverd from Wordpress Blog, for more details please check <a href="recover-my-blog">HERE</a></p>
+
+<h5 id="june-2-2019"><a href="https://web.archive.org/web/20210514143128/https://void-shana.moe/linux/customize-your-zsh-prompt.html" title="2:35 pm">June 2, 2019</a></h5>
+<p><a href="https://web.archive.org/web/20210514143128/https://void-shana.moe/author/void001" title="View all posts by VOID001">VOID001</a> Comments  <a href="https://web.archive.org/web/20210514143128/https://void-shana.moe/linux/customize-your-zsh-prompt.html#comments">4 comments</a></p>
+
+<h2 id="screenshot">Screenshot</h2>
+
+<p><img src="https://web.archive.org/web/20210514143128im_/https://img.vim-cn.com/e6/78d4e48a5339575a8227fa866adcb765b8b641.png" alt="This image has an empty alt attribute; its file name is 78d4e48a5339575a8227fa866adcb765b8b641.png" /></p>
+
+<p>You may need “good network condition” to preview this anime</p>
+
+<p><img src="https://web.archive.org/web/20210514143128im_/https://img.vim-cn.com/e6/78d4e48a5339575a8227fa866adcb765b8b641.png" alt="" />Screenshot for my zsh prompt
+Instructions
+————</p>
+
+<p>I choose to use zsh <strong>promptinit</strong> system to write my own themes, which can be easily managed by zsh <code class="language-plaintext highlighter-rouge">prompt</code></p>
+
+<h3 id="before-you-start">Before you start</h3>
+
+<p>the <code class="language-plaintext highlighter-rouge">promptinit</code> uses autoload mechanism to load the theme file, so first we need to ensure the theme file <strong>locates inside fpath</strong>, if not, we should add the path containing your theme file into <code class="language-plaintext highlighter-rouge">fpath</code> array, just like the following (suggest my theme is in ~/.zsh/themes):</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>fpath=(~/.zsh/themes $fpath)
+</code></pre></div></div>
+
+<p><strong>Remember to put this line before any fpath &amp; autoload modification, e.g: if you are using grml-zsh-config, it’s recommended to put this line into ~/.zsh.pre</strong></p>
+
+<p>And then you should set the theme file name to <code class="language-plaintext highlighter-rouge">prompt_&lt;theme&gt;_setup</code>, this will be recognized by the zsh promptinit system. Then create a function named <code class="language-plaintext highlighter-rouge">prompt_&lt;theme&gt;_setup</code> inside your theme file. Your theme file now should have a basic skeleton like this (e.g: your theme name is moe).</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>prompt\_moe\_setup () {
+
+}
+
+prompt\_moe\_setup [[email protected]](/web/20210514143128/https://void-shana.moe/cdn-cgi/l/email-protection)
+</code></pre></div></div>
+
+<p>According to the <a href="#References">manpage</a> [1], You can declare the following functions for your prompt theme:</p>
+
+<ul>
+  <li>prompt_<theme>\_precmd: Add it into precmd hook(`add-zsh-hook precmd prompt_<theme>_precmd`) to enable theme precmd</theme></theme></li>
+</ul>
+
+<blockquote>
+  <p>Quick reference to hook functions: zsh has some defined hook functions, such as <code class="language-plaintext highlighter-rouge">precmd</code>, <code class="language-plaintext highlighter-rouge">preexec</code>, etc, you can define an array with the string “_functions” append, such as <code class="language-plaintext highlighter-rouge">precmd_functions</code>, You can try <code class="language-plaintext highlighter-rouge">echo $precmd_functions</code> to see what’s the content inside. And all the elements inside the array will be treated as functions, execute with the same context and argument as the basic function. If the function not found, just siliently ignore it, and continue to next one. for more information please refer to the <a href="#References-(1)">zsh doc functions section</a> [2]</p>
+
+</blockquote>
+
+<ul>
+  <li>prompt_<theme>\_preview: Enable prompt preview via `prompt -p`</theme></li>
+  <li>prompt_<theme>\_help: Enable help command via `prompt -h`</theme></li>
+</ul>
+
+<h3 id="customize-the-ps-rps">Customize the PS, RPS</h3>
+
+<p>By convention, themes use for <code class="language-plaintext highlighter-rouge">PS1</code>, <code class="language-plaintext highlighter-rouge">PS2</code>, <code class="language-plaintext highlighter-rouge">RPS1</code>, etc. instead of <code class="language-plaintext highlighter-rouge">PROMPT</code>, <code class="language-plaintext highlighter-rouge">RPROMPT</code>. As the example above, inside <code class="language-plaintext highlighter-rouge">prompt_moe_setup</code> we can define <code class="language-plaintext highlighter-rouge">PS1</code>, <code class="language-plaintext highlighter-rouge">PS2</code>, etc. But what are <code class="language-plaintext highlighter-rouge">PS1</code>, <code class="language-plaintext highlighter-rouge">PS2</code>, <code class="language-plaintext highlighter-rouge">RPS1</code>?</p>
+
+<ul>
+  <li>PS1: The primary prompt string, displays just before the command input.</li>
+  <li>PS2: When your command is not finished in one line, it will display in
+the next following lines until your command is finsihed (e.g.: write a
+multi-line while loop in zsh)</li>
+  <li>RPS1: It will display at the right hand side when PS1 is displayed. (For
+me, a right hand side RPS1 is useful to display error code information)</li>
+</ul>
+
+<p>There are also other prompt parameters(officially called parameters by zsh, but I think maybe variable is more intuitive) such as <code class="language-plaintext highlighter-rouge">PS3</code>,<code class="language-plaintext highlighter-rouge">PS4</code>, etc. but we don’t really use it in common. For all the prompt variables, they all accept the same prompt escape sequence. The following are some commonly used escape sequence:</p>
+
+<ul>
+  <li><code class="language-plaintext highlighter-rouge">%/</code> <code class="language-plaintext highlighter-rouge">%~</code>: Current working dir, Try them to see the difference.</li>
+  <li><code class="language-plaintext highlighter-rouge">%m</code> <code class="language-plaintext highlighter-rouge">%M</code>: machine host name, either in short or full format.</li>
+  <li><code class="language-plaintext highlighter-rouge">%B</code> <code class="language-plaintext highlighter-rouge">%b</code>: Begin / end <strong>bold</strong> text mode.</li>
+  <li><code class="language-plaintext highlighter-rouge">%n</code>: $USERNAME variable</li>
+</ul>
+
+<p>For a full escape sequence reference please refer to the zsh-manual <a href="#References">Propmt Expansion</a> [3]. To debug your prompt string, you can simply use <code class="language-plaintext highlighter-rouge">print -rP &lt;STRING&gt;</code> to see the effect of your prompt, no need to reload zsh each time.</p>
+
+<p>A trick of displaying error code information: I use <code class="language-plaintext highlighter-rouge">%(?..%F{red}\(?%f)</code> to display the error code in )RPS1, it will only show a red error code when the error code is not 0. The form <code class="language-plaintext highlighter-rouge">%(?.&lt;true-text&gt;.&lt;false-text&gt;)</code> is a conditional substring, means when the exit status of the last command is not 0, it will display the <code class="language-plaintext highlighter-rouge">&lt;false-text&gt;</code> else display <code class="language-plaintext highlighter-rouge">&lt;true-text&gt;</code>, we just leave the <code class="language-plaintext highlighter-rouge">&lt;true-text&gt;</code> blank so it won’t display anything when the command exit without any error.</p>
+
+<h3 id="enable-version-control-info">Enable version control info</h3>
+
+<p>It might be good to display the git info (or other vcs) along with your prompt. zsh has a powerful module vcs_info that can help you with this need.</p>
+
+<p>For a quick start, you need to add the following lines into your theme file. (Still use the example above)</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>prompt\_opts=(subst percent)
+
+function prompt\_moe\_precmd() {
+    vcs\_info
+}
+
+</code></pre></div></div>
+
+<p>Then append <code class="language-plaintext highlighter-rouge">\(vcs_info_msg_0_</code> into your prompt. Be careful that you should append the plain text <code class="language-plaintext highlighter-rouge">\)vcs_info_msg_0</code> instead of this variable, since the variable will be evaluated only when it is declared, while the plain mode is subjected to <a href="#References">Parameter Expansion</a> [3], that is, it will be evaluated each time the text displays. The following line is an example of adding vcs_info to your PS1:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>PS1="$PS1 \$vcs\_info\_msg\_0\_"
+
+</code></pre></div></div>
+
+<p>You might want also customize the <code class="language-plaintext highlighter-rouge">$vcs_info_msg_0_</code> prompt, such as changing the color, add / remove information displayed. You can achieve this with <code class="language-plaintext highlighter-rouge">zstyle</code>. Following are a list of common options:</p>
+
+<ul>
+  <li><code class="language-plaintext highlighter-rouge">zstyle ':vcs_info:*' formats &lt;STRING&gt;</code>: Set the normal
+vcs_info format string(when you are not in rebase, merge or other
+actions it will display this one), you can get the current value by <code class="language-plaintext highlighter-rouge">zstyle | grep vcs_info -B1</code>.</li>
+  <li><code class="language-plaintext highlighter-rouge">zstyle ':vcs_info:*' actionformats &lt;STRING&gt;</code>: Set the vcs_info string when in rebase, merge or other actions.</li>
+  <li><code class="language-plaintext highlighter-rouge">zstyle 'vcs_info:*' check-for-changes true/false</code>: Enable /
+Disable checking for the uncommitted changes in current workdir, and if
+there are uncommitted changes it will display either %u (for unstaged
+changes) or %c (for staged changes). These to escape sequences can be
+also configured by <code class="language-plaintext highlighter-rouge">zstyle</code></li>
+  <li><code class="language-plaintext highlighter-rouge">zstyle ':vcs_info:*' unstagedstr &lt;STRING&gt;</code>: Set the string to display for %u</li>
+</ul>
+
+<p>Note that we use “:vcs_info:*” above to match for all kinds of vcs systems as long as all repos to give them the settings. If you want to set different options for specified repos / vcs (e.g: Disable the check-for-changes for kernel repo since it’s too big and cause delay), see the example below:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>zstyle ':vcs\_info:*:*:latest-linux-kernel' check-for-changes false
+
+</code></pre></div></div>
+
+<p>This will only disable check for unstaged change for repo with root directory named “latest-linux-kernel”.</p>
+
+<p>About a full reference about vcs_info usage and configuration, see <a href="#References">zsh documentation for vcs_info</a> [4]</p>
+
+<h3 id="async-zsh-prompt">Async Zsh Prompt</h3>
+
+<p>Although the vcs_info is useful, you may already found lags when turn on the the <code class="language-plaintext highlighter-rouge">check-for-changes</code> option, esp. in large repos. It’s annoying that the prompt doesn’t display instantly after we press enter. One option is to disable the <code class="language-plaintext highlighter-rouge">check-for-changes</code> option for these huge repos, however it’s just a workaround.</p>
+
+<p>Fortunately, we have async zsh job support which can solve the problem. There are different kinds of async plugin we can use in zsh, for this blog we will use <a href="#References">zsh-async</a> [5].</p>
+
+<p>zsh-async supports async jobs as well as callback handlers. Along with ZLE (<a href="#References">Zsh Line Editor</a> [6]) command <code class="language-plaintext highlighter-rouge">zle reset-prompt</code> we can achieve the async update of <code class="language-plaintext highlighter-rouge">PS1</code>:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>function prompt\_moe\_setup() {
+    # Other codes ...    
+    async\_start\_worker vcs\_updater\_worker
+    async\_register\_callback vcs\_updater\_worker do\_update
+}
+
+function do\_update() {
+    vcs\_info
+    zle reset-prompt
+}
+
+function prompt\_moe\_precmd() {
+    async\_job vcs\_updater\_worker
+}
+
+
+</code></pre></div></div>
+
+<p>And then you have your async vcs_info now! But the code above is somehow glitchy, An optimized one can be found here: <a href="https://web.archive.org/web/20210514143128/https://gist.github.com/VOID001/588347b0ef4b3a14759579e8bf6acb23#file-prompt_moe_setup-L48">https://gist.github.com/VOID001/588347b0ef4b3a14759579e8bf6acb23#file-prompt_moe_setup-L48</a> (Still have some glitches but it’s currently fine for me)</p>
+
+<p>The code above does the following things:</p>
+
+<ul>
+  <li>In executing hook precmd, it starts an empty async task, which will return immediately.</li>
+  <li>After the async job finished, it will execute the callback function: <code class="language-plaintext highlighter-rouge">do_update</code>.</li>
+  <li>In <code class="language-plaintext highlighter-rouge">do_update</code>, we call vcs_info to update the
+$vcs_info_msg_0_ (Note this will not block the prompt or any interaction
+with current prompt). Then we use <code class="language-plaintext highlighter-rouge">zle reset-prompt</code> to reload current prompt.</li>
+</ul>
+
+<h2 id="ending">Ending</h2>
+
+<p>Writing bash/zsh script is somehow painful for me so I previously stick to oh-my-zsh for a long time. However the zsh completion and git-prompt-info is so slow that always bother me. So I tried to switch to <code class="language-plaintext highlighter-rouge">grml-zsh-config</code> and define a custom prompt for me, what I found suprising is that writing (simple) zsh scripts are not as difficult as I think thanks to the well-documented zsh manpage and online manual. So I wrote this article as a “Zsh Theme Creation Quick Start Guide” for those who are dissatisfied with the oh-my-zsh themes and want to have a chance to create your own theme.</p>
+
+<p>Thanks for <a href="https://web.archive.org/web/20210514143128/https://blog.lilydjwg.me/">@lilydjwg</a> for giving me lots of help when writing the theme. Thanks for @swordfeng for providing me with cute sample theme.</p>
+
+<h2 id="references">References</h2>
+
+<ul>
+  <li><strong>(1)</strong> zshall(1) manual page: “PROMPT THEMES”</li>
+  <li><strong>(2)</strong> <a href="https://web.archive.org/web/20210514143128/http://zsh.sourceforge.net/Doc/Release/Functions.html">http://zsh.sourceforge.net/Doc/Release/Functions.html</a></li>
+  <li><strong>(3)</strong> <a href="https://web.archive.org/web/20210514143128/http://zsh.sourceforge.net/Doc/Release/Prompt-Expansion.html#Prompt-Expansion">http://zsh.sourceforge.net/Doc/Release/Prompt-Expansion.html#Prompt-Expansion</a></li>
+  <li><strong>(4)</strong> <a href="https://web.archive.org/web/20210514143128/http://zsh.sourceforge.net/Doc/Release/User-Contributions.html#Version-Control-Information">http://zsh.sourceforge.net/Doc/Release/User-Contributions.html#Version-Control-Information</a></li>
+  <li><strong>(5)</strong> <a href="https://web.archive.org/web/20210514143128/https://github.com/mafredri/zsh-async/">https://github.com/mafredri/zsh-async/</a></li>
+  <li><strong>(6)</strong> <a href="https://web.archive.org/web/20210514143128/http://zsh.sourceforge.net/Doc/Release/Zsh-Line-Editor.html#Zsh-Line-Editor">http://zsh.sourceforge.net/Doc/Release/Zsh-Line-Editor.html#Zsh-Line-Editor</a></li>
+</ul>
+
+<hr />
+
+<p><a href="https://web.archive.org/web/20210514143128/https://void-shana.moe/category/linux/archlinux">archlinux</a>, <a href="https://web.archive.org/web/20210514143128/https://void-shana.moe/category/linux">Linux</a> <a href="https://web.archive.org/web/20210514143128/https://void-shana.moe/tag/linux">linux</a>, <a href="https://web.archive.org/web/20210514143128/https://void-shana.moe/tag/prompt">prompt</a>, <a href="https://web.archive.org/web/20210514143128/https://void-shana.moe/tag/zsh">zsh</a></p>
+
+<hr />
+<h2 id="historical-comments">Historical Comments</h2>
+<ol>
+  <li>
+    <p><img src="https://web.archive.org/web/20210514143128im_/https://secure.gravatar.com/avatar/d8fb8dde3de28b1d063f405a6007e1ac?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>naruto-ding</strong> says: 
+<a href="https://web.archive.org/web/20210514143128/https://void-shana.moe/linux/customize-your-zsh-prompt.html#comment-1049">January 13, 2020 at 2:00 am</a>
+Hello,</p>
+
+    <ol>
+      <li><img src="https://web.archive.org/web/20210514143128im_/https://secure.gravatar.com/avatar/5612f7d51961a8e49efb43a5e4cf18a6?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>VOID001</strong> says: 
+ <a href="https://web.archive.org/web/20210514143128/https://void-shana.moe/linux/customize-your-zsh-prompt.html#comment-1052">January 14, 2020 at 3:44 pm</a>
+ Hello naruto-ding,
+ Glad you like it! But I am sorry to tell you that I don’t have enough time to finish that series. That series of video is made when I was a senior student. The neu-os and the video tutorial is for teaching use of the “Linux Operating System” course in my school. After I graduate I have many other things to work and study so I don’t have the time to do that. I tried to ask the current maintainer of neu-os in my previous school to continue publishing some video tutorials but they are also very busy. Making one episode of the series tutorial will take me more than 12 hours – 20 hours or even further, there are a lot of preparation needed such as the slides, the references, the sample code, etc.<br />
+ However, in the future although I cannot update these OS tutorial videos, I will try to post some short videos (not in series) related to the operating system (such as ext4 file system, linux utility, command-line tools, etc). This kind of video will be less time consuming to made and to watch. Also I think it will provide some useful information for the audience.</li>
+    </ol>
+  </li>
+  <li>
+    <p><img src="https://web.archive.org/web/20210514143128im_/https://secure.gravatar.com/avatar/d8fb8dde3de28b1d063f405a6007e1ac?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>naruto-ding</strong> says: 
+<a href="https://web.archive.org/web/20210514143128/https://void-shana.moe/linux/customize-your-zsh-prompt.html#comment-1050">January 13, 2020 at 2:10 am</a>
+I realize the comments under each blog is quite slow. Hope to get the chance to consult with you for daily questions if it doesn’t bother you too much. Maybe your email for further contact. (✿◡‿◡)</p>
+
+    <ol>
+      <li>
+        <p><img src="https://web.archive.org/web/20210514143128im_/https://secure.gravatar.com/avatar/5612f7d51961a8e49efb43a5e4cf18a6?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>VOID001</strong> says: 
+ <a href="https://web.archive.org/web/20210514143128/https://void-shana.moe/linux/customize-your-zsh-prompt.html#comment-1053">January 14, 2020 at 3:46 pm</a>
+ Hello naruto-ding,<br />
+ You can find my contact information here: <a href="https://web.archive.org/web/20210514143128/https://void-shana.moe/void">https://void-shana.moe/void</a><br />
+ Feel free to send me the email/in-site comments/questions about os via github issue <a href="https://web.archive.org/web/20210514143128/https://github.com/VOID001/neu-os">https://github.com/VOID001/neu-os</a>, I will be very happy to exchange thoughts with you.</p>
+      </li>
+      <li>
+        <p><img src="https://web.archive.org/web/20210514143128im_/https://secure.gravatar.com/avatar/5612f7d51961a8e49efb43a5e4cf18a6?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>VOID001</strong> says: 
+ <a href="https://web.archive.org/web/20210514143128/https://void-shana.moe/linux/customize-your-zsh-prompt.html#comment-1053">January 14, 2020 at 3:46 pm</a>
+ Hello naruto-ding,<br />
+ You can find my contact information here: <a href="https://web.archive.org/web/20210514143128/https://void-shana.moe/void">https://void-shana.moe/void</a><br />
+ Feel free to send me the email/in-site comments/questions about os via github issue <a href="https://web.archive.org/web/20210514143128/https://github.com/VOID001/neu-os">https://github.com/VOID001/neu-os</a>, I will be very happy to exchange thoughts with you.</p>
+      </li>
+    </ol>
+  </li>
+</ol>]]></content><author><name></name></author><summary type="html"><![CDATA[The content is recoverd from Wordpress Blog, for more details please check HERE]]></summary></entry><entry><title type="html">将 vim 作为日常笔记本使用</title><link href="https://void-shana.moe//posts/zh-taking-notes-with-vim" rel="alternate" type="text/html" title="将 vim 作为日常笔记本使用" /><published>2019-02-24T00:00:00+08:00</published><updated>2019-02-24T00:00:00+08:00</updated><id>https://void-shana.moe//posts/zh-taking-notes-with-vim</id><content type="html" xml:base="https://void-shana.moe//posts/zh-taking-notes-with-vim"><![CDATA[<p>The content is recoverd from Wordpress Blog, for more details please check <a href="recover-my-blog">HERE</a></p>
+
+<h5 id="february-24-2019"><a href="https://web.archive.org/web/20210514125212/https://void-shana.moe/linux/zh-taking-notes-with-vim.html" title="4:27 pm">February 24, 2019</a></h5>
+<p><a href="https://web.archive.org/web/20210514125212/https://void-shana.moe/author/void001" title="View all posts by VOID001">VOID001</a> Comments  <a href="https://web.archive.org/web/20210514125212/https://void-shana.moe/linux/zh-taking-notes-with-vim.html#comments">14 comments</a></p>
+
+<p>本文通过介绍如何使用 Vimwiki, perl graph-easy 以及 git 将 vim 配置为日常的笔记工具。注: 本文内容在于提供一种笔记解决方案，不在于比较各种方法的优劣，如果大家有心仪的推荐方案，欢迎提供探讨</p>
+
+<h2 id="0x00-preface">0x00 Preface</h2>
+
+<p>Note taking 是很多人日常会进行的活动，因而为自己营造一个良好的 note taking 体验十分重要。说道 plain-text note 想到的第一个当然是 org-mode, 可是虽然 org-mode 是十分好的笔记工具，但我并不是很愿意为了 org-mode 而去使用 emacs, 同时使用两个编辑器对大脑应该是一个伤害（大雾，有关 org-mode 的使用介绍可以看 <a href="https://web.archive.org/web/20210514125212/https://blog.poi.cat/post/write-a-programming-doc-with-org-mode">用 Org-mode 写编程文档</a> ）。如果你也像我一样是一个 daily vim user，一定会希望能使用 vim 的方式来做笔记。但是当我们搜索相关 plugin 的时候，我们发现可以使用的笔记 plugin 十分有限，且没有较好的介绍这些 plugin 的文章，因而可能自己尝试许久后最终放弃了使用 vim 做笔记。（ 作为我个人而言，我曾经放弃使用 vim 做笔记的原因如下:</p>
+
+<ul>
+  <li>vim 笔记格式不够直观，不能够获得很好的 preview 效果 (如用 markdown 格式做笔记)</li>
+  <li>vim 笔记之间跳转 (navigation) 困难，无法灵活的引用内容</li>
+  <li>无法在vim 笔记内画图</li>
+  <li>vim 笔记不能打 tag，也就不可能支持使用 tag 搜索相应笔记</li>
+  <li>笔记需要存储在一个 directory 里，没有一个直观的笔记 index 供我们管理笔记（如给标题添加注释，自由的添加删除笔记等）</li>
+</ul>
+
+<p>后续受 @tonyluj 的推荐我尝试了 <a href="https://web.archive.org/web/20210514125212/https://github.com/xolox/vim-notes">vim-notes</a>。该插件能够对 Markdown Notes 进行管理，Markdown 作为大家经常使用的标记语言，很直观的被我选做 plain text note 的基本 可是在使用的过程中我觉得有一些不易用的因素，如笔记文件名必须为笔记第一行内容，使得我的笔记文件夹下笔记名称出现空格，引号等转义后的字符，造成观感上的不适；另外 vim-notes 的跳转功能也不够强大，不支持创建带有 description 的 Link，因而当 vim-notes 里的 Link 较多的时候，笔记的可读性就降低了。vim-notes 支持搜索功能，可是对我而言，全文的搜索功能不如一个方便的索引功能更加适合，因而我使用了一段时间的 vim-notes 后就放弃了</p>
+
+<p>而后在 @lilydjwg 百合仙子的推荐下，我尝试了 <a href="https://web.archive.org/web/20210514125212/https://github.com/vimwiki/vimwiki">vimwiki</a> ,这个插件的名字听起来不像 note taking 插件 (对我来说是这样的)，而且同其他 vim note taking plugin 一样，也没有很多文章来介绍 vimwiki 的使用体验。因而这也是本篇文章的目的之一啦，希望本文能够为大家介绍一种舒适的 vim note taking 体验</p>
+
+<h2 id="0x01-links">0x01 Links</h2>
+
+<p>vimwiki 第一个吸引我也是他的一个主要功能就是 <strong>Link Navigation</strong>. Vimwiki 初次使用的时候，会建立 note(实际上是 wiki, 因本文描述场景为 note taking 下面全部使用 note 而非 wiki) directory， 用于保存你的所有 note ，同其他插件不同的是，他在创建 note directory 的同时，还会创建一个叫做 <strong>index note</strong> 的文件，这个文件就是你的笔记的目录啦，同时，该文件和你用 vimwiki 创建的其他笔记文件没有任何区别，并且可以使用 Vim 内快捷组合 <Leader>ww 打开该文件（也可使用 `:VimwikiIndex`)， index note 支持所有 vimwiki note syntax. 这是我的 note index 的截图</Leader></p>
+
+<p><img src="https://web.archive.org/web/20210514125212im_/https://void-shana.moe/wp-content/uploads/2019/02/shot-1024x616.png" alt="" />index page</p>
+
+<p>可以看到，文档里有很多 Link, 这些 Link 有的 Link 到一个笔记，有的 Link 到一个外部网站，我们还可以对这些笔记进行分类，把不同的笔记放在不同的分类下。</p>
+
+<blockquote>
+  <p>link syntax</p>
+
+  <table>
+    <tbody>
+      <tr>
+        <td>[[link</td>
+        <td>description]] 其中 description 可以省略，省略默认显示 link 的内容, 添加 description 后则只显示 description. link 可以为 笔记文件名，raw URL，file URI (external files), anchor 十分灵活</td>
+      </tr>
+    </tbody>
+  </table>
+</blockquote>
+
+<p>如上文的 index page 其中的 Link 的 raw format 是这样的: <code class="language-plaintext highlighter-rouge">[[lc-longest-palin-str|Longest Palindromic String]]</code>，跳转到该 link 的操作也十分简单，<strong>只需要在 Link 上点击回车，就会跳转到相应的内容，使用 backspace 即可返回到上一层</strong>。创建 link 的方式除了手动输入 [[]] 之外，还可以将光标移动到一个单词上点击回车， vimwiki 会自动将其转换为一个 link，如果该 link 指向的 note 不存在，跳转的时候 vimwiki 会自动创建该 note 文件供编辑。</p>
+
+<p>Link 可以为多种格式，它可以是一个 URL，在你使用 Enter 跳转的时候将该 URL 在你的默认浏览器打开，也可以是外部文件，比如一个图片文件，在跳转的时候会使用合适的软件打开该文件 (vimwiki 使用 xdg-open) 同时 Link 支持 subdirectory, 如上面 index page 里的<code class="language-plaintext highlighter-rouge">[ ] [[os/linux-kernel-rcu-000|Read Copy Update Mechanism]]</code> 的笔记文件链接到 $NOTE_DIR/os/linux-kernel-rcu-000.mw 这个 note。Link 也支持 anchor ,可以在同一个笔记里跳转到相应的 anchor ，我们可以使用该手段在 note 实现如 footnote 等实用功能。</p>
+
+<h2 id="0x01-tags">0x01 Tags</h2>
+
+<p>vimwiki 的另一个十分实用的功能是 note tagging</p>
+
+<blockquote>
+  <p>tag syntax</p>
+
+  <p>:tag1:tag2:~:tagn: 或者 :tag1: :tag2: ~ :tagn: 支持松散或紧密两种格式</p>
+</blockquote>
+
+<p>我们在写博客和使用现代笔记软件的时候，往往都希望能够灵活的给笔记打 tag，因为笔记是零散的想法的集合，一篇笔记内容可能交叉属于多个 category ，通过 tagging 我们可以将笔记分类管理起来 。而 vimwiki 对 tagging 的支持也是十分好的，它不仅仅支持给文章打 tag ，还支持给文章的每一个标题打 tag ，并且提供了十分方便的 tag indexing and searching 功能，我们下面就来看一下</p>
+
+<p>使用 <code class="language-plaintext highlighter-rouge">:VimwikiGenerateTags</code> 可以对现有的全部 tag 生成 index 示例效果如下</p>
+
+<p><img src="https://web.archive.org/web/20210514125212im_/https://void-shana.moe/wp-content/uploads/2019/02/image-843x1024.png" alt="" />使用 Generate Tag 生成的 Tag Index
+使用 <code class="language-plaintext highlighter-rouge">:VimwikiSearchTags</code> 可以搜索含有某个 tag 的 note，也可以使用 <code class="language-plaintext highlighter-rouge">:VimwikiSearch</code>搜索 note 的全文</p>
+
+<h2 id="0x02-tables-and-graph">0x02 Tables and Graph</h2>
+
+<p>vimwiki 支持 markdown styled table syntax 并实现了自动对齐，Tab 切换 cell 等功能，在 vimwiki 里创建表格的时候，使用 <code class="language-plaintext highlighter-rouge">:VimwikiTable &lt;row&gt; &lt;col&gt;</code>创建一个空白的表格，然后进入　insert mode, 编辑单个 cell 的内容后点击 Tab ，表格会自动对齐，如果编辑的 cell 为表格中最后一个 cell ，点击 Tab　后会创建新一行供继续编辑。效果如下 (如果看不到下面的视频说明<em>网络</em>不好（x</p>
+
+<p>做笔记的时候我们还需要绘制一些 digram 如 UML 图，流程图，关系图等。vimwiki 并没有支持这样的功能，因而我使用 <a href="https://web.archive.org/web/20210514125212/https://aur.archlinux.org/packages/perl-graph-easy/">graph-easy(AUR)</a> 实现了该功能，graph-easy 支持直接将 <a href="https://web.archive.org/web/20210514125212/https://www.wikiwand.com/en/DOT_(graph_description_language)">DOT Language</a> 转换为 ascii digram，我编写了一个简单的 vim plugin 将其集成到了 vim 内，效果如下:</p>
+
+<p>该插件可以通过 Vim 的 Plugin Manager 进行安装 插件地址: <a href="https://web.archive.org/web/20210514125212/https://github.com/VOID001/graph-easy-vim">https://github.com/VOID001/graph-easy-vim</a></p>
+
+<h2 id="0x03-generate-html">0x03 Generate HTML</h2>
+
+<p>vimwiki 可以很方便的将内容导出为 HTML ，命令为 <code class="language-plaintext highlighter-rouge">:Vimwiki2HTML :VimwikiAll2HTML</code> <code class="language-plaintext highlighter-rouge">:Vimwiki2HTMLBrowse</code>，分别为生成单页 HTML, 将 note directory 下全部文件生成 HTML ，生成单页 HTML 并打开浏览器浏览。vimwiki 会将 HTML 生成在 $NOTEDIR_html 文件夹下。支持自定义 css file 生成自定义样式的笔记，默认的 HTML 风格是这样的</p>
+
+<p><img src="https://web.archive.org/web/20210514125212im_/https://void-shana.moe/wp-content/uploads/2019/02/image-1-1024x665.png" alt="" />:Vimwiki2HTML 生成的 index page 默认样式
+0x04 Configuration
+——————</p>
+
+<p>以上就是对 vimwiki 主要功能的一个简单介绍了，本人刚刚开始使用，诸如 Diary Calendar 之类的功能还没有开始使用，而且这两个功能对我的用处较小，因而不对这些功能进行介绍，下面介绍下使用 vimwiki 的基本 configuration</p>
+
+<p>默认 vimwiki 会将 note directory 在 ~/vimwiki 下，我们可以通过配置来更改它</p>
+
+<blockquote>
+  <p>g:vimwiki_list option</p>
+
+  <p>vimwiki 支持多个 note , 每一个 note 的配置项是一个 Object， 多个 Object 构成该 g:vimwiki_list option 的 value.</p>
+
+</blockquote>
+
+<p>我的配置如下:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>let g:vimwiki\_list = [{
+            \ 'path': '~/Documents/Notes/', 'index': 'index', 'ext': '.mw',
+            \ 'auto\_tags': 1,
+            \ 'nested\_syntaxes': {'py': 'python', 'cpp': 'cpp', 'c':'c'}
+            \ }]
+nmap &lt;Leader&gt;tt &lt;Plug&gt;VimwikiToggleListItem
+
+</code></pre></div></div>
+
+<p>有关详细的配置，参考 :help vimwiki 的 vimwiki-local-options section，这里只介绍少量的基本设置参数</p>
+
+<ul>
+  <li>path: 该 note 的 directory</li>
+  <li>ext: 识别为 note 的文件后缀，为了兼容 git gogs 等的 syntax highlighting 使用了 mediawiki 的后缀 (*.mw *.mediawiki)</li>
+  <li>auto_tags: 是否自动生成 tag，设置为１表示自动生成，即 note 中如果有 tag 就会加入到 vimwiki 的 tag file 中</li>
+  <li>nested_syntaxes: 设置支持的高亮代码块类型，是 key-value pairs</li>
+</ul>
+
+<h2 id="0x05-syntax">0x05 Syntax</h2>
+
+<p>如果你看到了这里，说明你有可能会尝试下 vimwiki 因而我们在这里介绍下其基本语法。</p>
+
+<p>vimwiki 支持多种语法，包括自己的语法 vimwiki, 并且对 markdown 和 mediawiki 提供了支持 ，我个人推荐使用 vimwiki 语法，该语法和 vimwiki 的各种功能兼容最好，并且只有该格式支持 <code class="language-plaintext highlighter-rouge">:Vimwiki2HTML</code></p>
+
+<p>以下是基本文字效果语法:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>  *bold text*
+  \_italic text\_
+  ~~strikeout text~~
+  `code (no syntax) text`
+  super^script^
+  sub,,script,,
+</code></pre></div></div>
+
+<p>标题语法为 <code class="language-plaintext highlighter-rouge">= TITLE =</code> ，该标题为一级标题，二级标题则变为两个 “=”: <code class="language-plaintext highlighter-rouge">The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog) SUB TITLE The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog)</code> 以此类推</p>
+
+<p>列表语法基本同 Markdown 一致 注意需要在每一个 Item 和 Mark 之间添加 Space</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>* This is a list item
+*This is NOT a list item
+1. order list item 1
+2. ...
+
+...  支持多种 mark 这里不全部列出
+</code></pre></div></div>
+
+<p>pre-formatted text 一般用作在笔记内插入代码，保留其原本的格式，并且使用相应语法的高亮，他的语法如下:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>{{{lang
+    // Code goes here
+}}}
+</code></pre></div></div>
+
+<p>上面生成 ascii graph 的时候大家已经见过这个语法了，为了保留 ascii graph 原本的 format ，我将其作为一个 pre-formatted code block 处理。</p>
+
+<p>关于其他没有提到的 syntax ，可以参考 <code class="language-plaintext highlighter-rouge">:help vimwiki</code> 的 vimwiki-syntax section</p>
+
+<h2 id="0x06-ending">0x06 Ending</h2>
+
+<p>使用 vimwiki 使我获得了如使用 Modern Note Taking App 一样的体验，并且保留了我的 vim 使用习惯，因为 vim 的灵活性，我们可以进一步提升 note taking 使用体验实现诸如 Cloud Sync, fuzzy tag finder 之类的功能，不知道大家在看完本文后会不会去尝试下 vimwiki 呢，希望能够听到大家的使用心得，同时欢迎大家在评论区介绍自己是如何记录笔记的 🙂</p>
+
+<hr />
+
+<p><a href="https://web.archive.org/web/20210514125212/https://void-shana.moe/category/linux">Linux</a>, <a href="https://web.archive.org/web/20210514125212/https://void-shana.moe/category/linux/vim">vim</a> <a href="https://web.archive.org/web/20210514125212/https://void-shana.moe/tag/archlinux">archlinux</a>, <a href="https://web.archive.org/web/20210514125212/https://void-shana.moe/tag/linux">linux</a>, <a href="https://web.archive.org/web/20210514125212/https://void-shana.moe/tag/vim">vim</a></p>
+
+<hr />
+<h2 id="historical-comments">Historical Comments</h2>
+<ol>
+  <li>
+    <p><img src="https://web.archive.org/web/20210514125212im_/https://secure.gravatar.com/avatar/b7fd1168153a5d7fdd0f395a02a2a11d?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong><a href="https://web.archive.org/web/20210514125212/http://silverrainz.me/">SilverRainZ</a></strong> says: 
+<a href="https://web.archive.org/web/20210514125212/https://void-shana.moe/linux/zh-taking-notes-with-vim.html#comment-530">February 24, 2019 at 11:36 pm</a>
+/me 在使用一个还未存在的自建笔记系统，每次想写点东西都因为「无法解决依赖」而失败。</p>
+
+    <ol>
+      <li><img src="https://web.archive.org/web/20210514125212im_/https://secure.gravatar.com/avatar/5612f7d51961a8e49efb43a5e4cf18a6?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>VOID001</strong> says: 
+ <a href="https://web.archive.org/web/20210514125212/https://void-shana.moe/linux/zh-taking-notes-with-vim.html#comment-532">February 24, 2019 at 11:39 pm</a>
+ 可以来试试看 vimwiki 哦，也许真的能成为 LA 日常使用的笔记工具 XD</li>
+    </ol>
+  </li>
+  <li>
+    <p><img src="https://web.archive.org/web/20210514125212im_/https://secure.gravatar.com/avatar/89874964e3e524c2cbc10e0087061f77?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong><a href="https://web.archive.org/web/20210514125212/https://junyixu.github.io/">Junix</a></strong> says: 
+<a href="https://web.archive.org/web/20210514125212/https://void-shana.moe/linux/zh-taking-notes-with-vim.html#comment-536">February 26, 2019 at 6:20 pm</a>
+手机上想查看可以用什么方法呢</p>
+
+    <ol>
+      <li><img src="https://web.archive.org/web/20210514125212im_/https://secure.gravatar.com/avatar/5612f7d51961a8e49efb43a5e4cf18a6?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>VOID001</strong> says: 
+ <a href="https://web.archive.org/web/20210514125212/https://void-shana.moe/linux/zh-taking-notes-with-vim.html#comment-540">February 27, 2019 at 8:42 pm</a>
+ 可以用一个 github 客户端，在 vim 设置成每次保存的时候 push 到 github 上，然后使用 Android Github Client (e.g: Fasthub) 来查看</li>
+    </ol>
+  </li>
+  <li>
+    <p><img src="https://web.archive.org/web/20210514125212im_/https://secure.gravatar.com/avatar/5612f7d51961a8e49efb43a5e4cf18a6?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>VOID001</strong> says: 
+<a href="https://web.archive.org/web/20210514125212/https://void-shana.moe/linux/zh-taking-notes-with-vim.html#comment-541">February 28, 2019 at 3:32 pm</a>
+窝是觉得我自己的笔记本工具最好不要是那种 web editor，所以没选择那些方案</p>
+  </li>
+  <li>
+    <p><img src="https://web.archive.org/web/20210514125212im_/https://secure.gravatar.com/avatar/5612f7d51961a8e49efb43a5e4cf18a6?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>VOID001</strong> says: 
+<a href="https://web.archive.org/web/20210514125212/https://void-shana.moe/linux/zh-taking-notes-with-vim.html#comment-545">March 5, 2019 at 10:10 pm</a>
+根据百合的指导，窝给 vimwiki 记事本添加了自动同步(伪)功能<br />
+然后把里面的路径都替换成你自己的路径就好啦</p>
+
+    <ol>
+      <li><img src="https://web.archive.org/web/20210514125212im_/https://secure.gravatar.com/avatar/89874964e3e524c2cbc10e0087061f77?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong><a href="https://web.archive.org/web/20210514125212/https://junyixu.github.io/">Junix</a></strong> says: 
+ <a href="https://web.archive.org/web/20210514125212/https://void-shana.moe/linux/zh-taking-notes-with-vim.html#comment-778">August 5, 2019 at 5:43 pm</a>
+ 因为懒得再学一种语法，就直接用markdown 了，因为预览直接用 vim 的 markdown 预览插件，md 转换成 html 可以用 pandoc.</li>
+    </ol>
+  </li>
+  <li>
+    <p><img src="https://web.archive.org/web/20210514125212im_/https://secure.gravatar.com/avatar/74242ff548975ef430c690678bd49615?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong><a href="https://web.archive.org/web/20210514125212/https://blog.naibabiji.com/">奶爸笔记</a></strong> says: 
+<a href="https://web.archive.org/web/20210514125212/https://void-shana.moe/linux/zh-taking-notes-with-vim.html#comment-582">April 29, 2019 at 12:53 am</a>
+你这文章好长，引起我Brave提示无响应好几次。我只在vps上用过vim，都不知道你说的是不是和我说的一样东西。</p>
+
+    <ol>
+      <li><img src="https://web.archive.org/web/20210514125212im_/https://secure.gravatar.com/avatar/5612f7d51961a8e49efb43a5e4cf18a6?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>VOID001</strong> says: 
+ <a href="https://web.archive.org/web/20210514125212/https://void-shana.moe/linux/zh-taking-notes-with-vim.html#comment-583">April 29, 2019 at 8:56 am</a>
+ Chrome &amp; Firefox 看都没有问题</li>
+    </ol>
+  </li>
+  <li>
+    <p><img src="https://web.archive.org/web/20210514125212im_/https://secure.gravatar.com/avatar/d219af79b45e5891507fda4c4c2139a0?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong><a href="https://web.archive.org/web/20210514125212/https://repostone.home.blog/">repostone</a></strong> says: 
+<a href="https://web.archive.org/web/20210514125212/https://void-shana.moe/linux/zh-taking-notes-with-vim.html#comment-594">May 8, 2019 at 4:48 pm</a>
+看博主什么时候回来。</p>
+
+    <ol>
+      <li><img src="https://web.archive.org/web/20210514125212im_/https://secure.gravatar.com/avatar/5612f7d51961a8e49efb43a5e4cf18a6?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>VOID001</strong> says: 
+ <a href="https://web.archive.org/web/20210514125212/https://void-shana.moe/linux/zh-taking-notes-with-vim.html#comment-595">May 8, 2019 at 5:03 pm</a>
+ 一直在哦，只不过最近没有什么有趣的东西来写 -A-</li>
+    </ol>
+  </li>
+  <li>
+    <p><img src="https://web.archive.org/web/20210514125212im_/https://secure.gravatar.com/avatar/d3f616233073c2bf156aa1da5c7ec117?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>chenbxxx</strong> says: 
+<a href="https://web.archive.org/web/20210514125212/https://void-shana.moe/linux/zh-taking-notes-with-vim.html#comment-843">August 23, 2019 at 5:14 pm</a>
+有没有Vim处理中英文切换的路子 -_&lt;</p>
+  </li>
+  <li>
+    <p><img src="https://web.archive.org/web/20210514125212im_/https://secure.gravatar.com/avatar/8824e74d66ee336c6352fcfe2d2dd380?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>muou333000</strong> says: 
+<a href="https://web.archive.org/web/20210514125212/https://void-shana.moe/linux/zh-taking-notes-with-vim.html#comment-1122">May 8, 2020 at 3:18 pm</a>
+你好，问下：能把org里面的文件转到vimwiki里面来么？</p>
+
+    <ol>
+      <li>
+        <p><img src="https://web.archive.org/web/20210514125212im_/https://secure.gravatar.com/avatar/5612f7d51961a8e49efb43a5e4cf18a6?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>VOID001</strong> says: 
+ <a href="https://web.archive.org/web/20210514125212/https://void-shana.moe/linux/zh-taking-notes-with-vim.html#comment-1217">June 21, 2020 at 3:57 pm</a>
+ 你好， 我没有尝试过， 不过我认为 org-mode 表达的信息是 vimwiki 的超集， convert 到 vimwiki 会丢失一定的语义，不过 convert 应是可行的</p>
+      </li>
+      <li>
+        <p><img src="https://web.archive.org/web/20210514125212im_/https://secure.gravatar.com/avatar/5612f7d51961a8e49efb43a5e4cf18a6?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>VOID001</strong> says: 
+ <a href="https://web.archive.org/web/20210514125212/https://void-shana.moe/linux/zh-taking-notes-with-vim.html#comment-1217">June 21, 2020 at 3:57 pm</a>
+ 你好， 我没有尝试过， 不过我认为 org-mode 表达的信息是 vimwiki 的超集， convert 到 vimwiki 会丢失一定的语义，不过 convert 应是可行的</p>
+      </li>
+    </ol>
+  </li>
+</ol>]]></content><author><name></name></author><summary type="html"><![CDATA[The content is recoverd from Wordpress Blog, for more details please check HERE]]></summary></entry><entry><title type="html">Running Arch Linux with customized kernel in QEMU</title><link href="https://void-shana.moe//posts/running-arch-linux-with-customized-kernel-in-qemu" rel="alternate" type="text/html" title="Running Arch Linux with customized kernel in QEMU" /><published>2019-01-31T00:00:00+08:00</published><updated>2019-01-31T00:00:00+08:00</updated><id>https://void-shana.moe//posts/running-arch-linux-with-customized-kernel-in-qemu</id><content type="html" xml:base="https://void-shana.moe//posts/running-arch-linux-with-customized-kernel-in-qemu"><![CDATA[<p>The content is recoverd from Wordpress Blog, for more details please check <a href="recover-my-blog">HERE</a></p>
+
+<h5 id="january-31-2019"><a href="https://web.archive.org/web/20210514134020/https://void-shana.moe/linux/running-arch-linux-with-customized-kernel-in-qemu.html" title="7:16 pm">January 31, 2019</a></h5>
+<p><a href="https://web.archive.org/web/20210514134020/https://void-shana.moe/author/void001" title="View all posts by VOID001">VOID001</a> Comments  <a href="https://web.archive.org/web/20210514134020/https://void-shana.moe/linux/running-arch-linux-with-customized-kernel-in-qemu.html#comments">3 comments</a></p>
+
+<p>本文为内核爱好者们介绍一个便利的运行内核的方式，使用 QEMU + virtio 启动一个装载着自定义内核的 Arch Linux。</p>
+
+<h3 id="0x00-构建内核">0x00 构建内核</h3>
+
+<p>我们使用 Arch Linux 发行版使用的 .config 作为配置文件, 可以省却很多自己配置 Kernel Options 的繁琐工作。将配置文件放入 kernel source tree 后，使用 <code class="language-plaintext highlighter-rouge">make oldconfig</code> 就可以通过一个交互的命令行将最新的内核里的可配置参数补全到我们使用的 Arch Linux 的 .config 文件中。</p>
+
+<p>我们有两种方式获取到 Arch Linux (和其他发行版) 的 .config 文件:</p>
+
+<ol>
+  <li>使用 zcat 读取 <code class="language-plaintext highlighter-rouge">/proc/config.gz</code> 的内容并且保存为 .config</li>
+  <li>直接复制 `/usr/lib/modules/$(uname -r)/build/.config</li>
+  <li></li>
+</ol>
+
+<p>若要使用方法 1 ，内核需要开启 <code class="language-plaintext highlighter-rouge">Enable access to .config through /proc/config.gz</code> 这一选项需要我们将 <code class="language-plaintext highlighter-rouge">IKCONFIG_PROC</code> 设置为 y （相关依赖 option 项目也需要满足）</p>
+
+<p>配置文件准备好后，我们就可以开始构建内核了，如果你会频繁构建内核，建议使用 <a href="https://web.archive.org/web/20210514134020/https://ccache.samba.org/">ccache</a> 来缓存编译的中间目标文件 “*.o”。ccache 具体配置方法这里不多做介绍，简单说下使用方法，很简单，只需要在 gcc,cc,g++,c++ 的前面加上 ccache 即可，e.g 使用 ccahe 编译内核的构建命令可以这样写: <code class="language-plaintext highlighter-rouge">make CC="ccache gcc" -j8</code>。注意：ccache 不会提升首次编译的速度，它会将这些中间文件缓存起来，在后续的 recompilation 中检查是否有可以命中缓存的中间文件，有的话直接使用而不用重新编译，通过这种方式提升二次编译的速度<br />
+构建内核后，我们需要运行 make modules_install 供 initramfs 使用相应的 kernel module。</p>
+
+<h3 id="0x01-构建合适的-initramfs">0x01 构建合适的 initramfs</h3>
+
+<p>(建议以下操作在一个干净的 working directory 进行)</p>
+
+<p>我们将会使用 QEMU 提供的 virtio device 功能来 map host OS 的 filesystem image 到 guest OS 里。因此我们需要 guest OS 支持 virtio 驱动，因为我们的 rootfs 就是 virtio device, 我们需要在内核启动的时候就加载好 virtio 驱动，这里有两个 approach: 第一个就是将该驱动作为内核的 builtin 而非 module，第二个 approach 则是在 initramfs 里加载相应的驱动。</p>
+
+<p>在启动的时候，QEMU 的 bootloader 装载 kernel 以及 initramfs 到内存中，并启动内核，内核会对 initramfs 的存在进行检查，如果存在 initramfs 则将其 mount 到 / 并运行 /init (完成一系列复杂的 user-space 初始化工作) 这个过程中也会用我们在 kernel cmdline 里指定的 root disk mount 到 / 。</p>
+
+<p>具体过程如下, initramfs 加载后，执行 /init 脚本, /init 中将 root disk mount 到 initramfs 的 /new_root 上，而后通过 <code class="language-plaintext highlighter-rouge">switch_root</code> 将 mount tree 的 root 替换为 /new_root 也就是我们在 kernel cmdline 里指定的 root disk。同时 /init 脚本也会对配置到 initramfs 里的 kernel module 进行 modprobe (insmod)，这样我们就可以通过 initramfs 启动装载合适的驱动后启动各种不同的 root disk 了( USB, RAID, dm-crypt, etc)。</p>
+
+<p>因而我们需要构建合适的 initramfs 使得我们的 virtio disk 可以被加载，我们使用 Arch Linux 内的 initramfs 构建工具 mkinitcpio 进行构建。mkinitcpio 使用 .preset 文件管理构建特定 initramfs 的规则，我们编写自定义的 .preset 文件 linux-dev.preset。</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code># mkinitcpio preset file for the 'linux-macbook' package
+
+ALL\_config="./mkinitcpio.conf"
+ALL\_kver="5.0.0-rc4-macbook+"
+
+HOOKS=()
+PRESETS=('default' 'fallback')
+
+# default\_config="/etc/mkinitcpio.conf"
+default\_image="initramfs-linux-dev.img"
+# default\_options=""
+
+# fallback\_config="/etc/mkinitcpio.conf"
+fallback\_image="initramfs-linux-dev-fallback.img"
+fallback\_options="-S autodetect"
+
+</code></pre></div></div>
+
+<p>上面的 linux-dev.preset 里，我们可以只生成 default 而不生成 fallback ram image。注意 ALL_kver 要和你编译出的内核的 kernel version 一致，不然在 ramfs modprobe 的时候会因为找不到 /lib/modules/$(uname -r)/ 导致内核在 initramfs 阶段加载我们预先定义好的驱动失败。<br />
+为了保留系统原有的 mkinitcpio.conf 不被更改，我们复制了 mkinitcpio.conf 出来并且制定 linux-dev.preset 跟随该副本的配置, mkinitcpio.conf 我们只做一点修改，更改下加载的 MODULES 以及调用的 HOOKS :</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>MODULES="virtio virtio\_blk virtio\_pci virtio\_net ext4 xfs radeon"
+HOOKS="base udev autodetect modconf block filesystems keyboard fsck"
+
+</code></pre></div></div>
+
+<p>大家可以根据自己的需要进行修改相应的 modules, 值得注意的是我们在 MODULES 里需要制定 virtio 系列的驱动程序，这样我们才能够让 kernel 在 bootup process 识别出我们的 virtio 设备。<br />
+做好上述准备后，我们就可以开始生成 initramfs 了: <code class="language-plaintext highlighter-rouge">mkinitcpio -p ./linux-dev.preset</code> 。执行后我们就在当前目录获得了 initramfs-linux-dev.img 这样一个 ramdisk cpio gzip compressed image<br />
+以下是我的 working directory 在执行完毕 initramfs 生成后的文件列表:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>╰─(´・ω・)つ  ls -al
+total 42016
+drwxr-xr-x  2 void001 void001      162 Jan 31 18:03 .
+drwxrwxr-x 32 void001 void001     4096 Jan 31 15:55 ..
+-rw-r--r--  1 void001 void001 31195709 Jan 31 18:01 initramfs-linux-dev-fallback.img
+-rw-r--r--  1 void001 void001 11802418 Jan 31 18:00 initramfs-linux-dev.img
+-rw-r--r--  1 void001 void001      403 Jan 31 11:30 linux-dev.preset
+-rw-r--r--  1 void001 void001     2545 Jan 31 11:24 mkinitcpio.conf
+-rwxr-xr-x  1 void001 void001      428 Jan 30 19:54 mk.sh
+lrwxrwxrwx  1 void001 void001       24 Jan 30 19:54 vmlinuz-linux-dev -&gt; ../arch/x86/boot/bzImage
+
+</code></pre></div></div>
+
+<h3 id="0x02-安装-arch-linux-到-filesystem-image">0x02 安装 Arch Linux 到 filesystem image</h3>
+
+<p>我们首先通过 qemu-img 创建 root.img home.img 两个 disk image (也可以只创建一个，根据个人喜好自行选择）<br />
+从 <a href="https://web.archive.org/web/20210514134020/https://archlinux.org/download">https://archlinux.org/download</a> 获得一个 Latest ArchISO，然后使用如下参数启动 QEMU:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>qemu-system-x86\_64 -cdrom /path/to/your/livecd.iso --enable-kvm -m 2048 -nic user,model=virtio-net-pci # 指定 cdrom 内容为 LiveCD, 使用 KVM, 限制使用内存 2048M (过小会导致 ramfs 无法完全解压到 ram 里因而无法加载 LiveCD),使用 virtio net device 作为网络设备
+
+# 可选参数
+-nographic # 不启动图形界面 （开启该选项后可以通过当前 terminal 接管 Guest OS 的 Serial output, 需要在 cmdline 增加一个参数)
+-vnc :0 # 开启 VNC Server 监听 5900 端口
+</code></pre></div></div>
+
+<p>如果我们没有添加那些可选参数那么我们可以直接通过 QEMU 的 monitor 进行 ArchLinux 的安装了，这里介绍一下这个 -nographic 额外参数。<br />
+根据 QEMU.1(1) 说明，开启 -nographic 之后 QEMU 会将串口的输出 redirect 到 terminal(console)。为了让我们的 LiveCD 能够将内容输出到 QEMU 的 emulated Serial, 我们在 bootmenu 的 kernel cmdline 里添加: <code class="language-plaintext highlighter-rouge">console=ttyS0,38400</code> (38400 baud rate) 然后启动 LiveCD</p>
+
+<p><img src="https://web.archive.org/web/20210514134020im_/https://void-shana.moe/wp-content/uploads/2019/01/image-1024x293.png" alt="" />修改 iso 的 bootup cmdline</p>
+
+<blockquote>
+  <p>QEMU.1(1)</p>
+
+  <p>-nographic<br />
+ Normally, if QEMU is compiled with graphical window support, it displays output such as guest graphics, guest console, and the QEMU monitor in a window. With this option, you can totally<br />
+ disable graphical output so that QEMU is a simple command line application. The emulated serial port is redirected on the console and muxed with the monitor (unless redirected elsewhere<br />
+ explicitly). Therefore, you can still use QEMU to debug a Linux kernel with a serial console. Use C-a h for help on switching between the console and monitor.</p>
+</blockquote>
+
+<p>安装 Arch 的过程不需要多余的说明，如果你是第一次安装 Arch Linux 的话请 <a href="https://web.archive.org/web/20210514134020/https://wiki.archlinux.org/index.php/Installation_guide">follow the archlinux wiki</a> 安装好之后，我们的 root file system image 就创建好了</p>
+
+<h3 id="0x03-在-qemu-中运行-arch-linux-并且使用自定义的内核">0x03 在 QEMU 中运行 Arch Linux 并且使用自定义的内核</h3>
+
+<p>至此我们所有的准备工作都做好了，下面我们来启动编译好的内核，我们使用如下的 QEMU 参数</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>#!/bin/bash
+BUILDROOT=/home/void001/Kernel-Hacking/latest-linux-kernel/build
+KERNEL=${BUILDROOT}/vmlinuz-linux-dev
+INITRAMFS=${BUILDROOT}/initramfs-linux-dev.img
+
+qemu-system-x86\_64 -kernel ${KERNEL} \
+    -initrd ${INITRAMFS} \
+    -nic user,model=virtio-net-pci \
+    -drive file=root.img,if=virtio,index=0 \
+    -drive file=home.img,if=virtio,index=1 \
+    -nographic \
+    -m 2048 \
+    -append "earlyprintk=ttyS0 rw root=UUID=7279a4af-7e4d-4aa0-8c19-e47da93eeb87-2333 console=ttyS0,38400 debug" \
+    -vnc :0 \
+    --enable-kvm
+
+</code></pre></div></div>
+
+<p>相比上面的 ISO bootup，这次我们指定了 kernel, initrd 两个参数，分别是对应自定义内核文件，和我们构建好的 initramfs-linux-dev.img。同时我们使用 -drive 在 guest OS 里创建两个 drive backend，interface 都是 virtio，我们已经在 initramfs 里加载了 virtio driver 因此 root filesystem 可以被正确找到并启动。-append 参数将其 value append 到 kernel cmdline 我们这里指定了 root disk (直接指定为 /dev/vd* 也是可以的，不过我这里有两个 drive 为了避免 /dev/vd* 在每次启动的时候名字可能发生变动，使用 UUID 指定了 root device)。使用上面的命令，我们就可以启动 QEMU 了，最后我们看下效果:</p>
+
+<p><img src="https://web.archive.org/web/20210514134020im_/https://void-shana.moe/wp-content/uploads/2019/01/image-1-1024x139.png" alt="" />可以看到自定义的 kernel message 信息，这个是修改 ext4 的 module_init 产生的。
+<img src="https://web.archive.org/web/20210514134020im_/https://void-shana.moe/wp-content/uploads/2019/01/a-1024x538.png" alt="" />Kernel is latest rc4 kernel, and CPU is using QEMU, all check</p>
+<h3 id="0x04-总结">0x04 总结</h3>
+
+<p>本文介绍了一种内核爱好者可以使用的内核调试运行方法，该方法无需将内核安装到 /boot 并且进行 reboot 切换，使用 QEMU + KVM + Serial 将 guest OS 的输入输出接管到 host OS 的 terminal，方便查看，复制信息和调试，该方法也可以验证我们构建的内核是否能够在现存的 Linux Distribution 上启动成功，我们也可以将 root filesystem image mount 到 host OS 对其中的文件进行 manipulate。</p>
+
+<h3 id="0x05-后记">0x05 后记</h3>
+
+<p>文中介绍的方法是与 @tonyluj 讨论后得到的方案，本文参考了 Arch Linux Wiki, QEMU man page 以及 tldp.org，在此加以说明。<br />
+距离我的上一篇文章已经有很久了，这之中经历了很多事情，现在总算可以静下来继续研究内核，写文章和博客了，之后也会继续撰写 Kernel Develop / Linux 相关的文章，看了下时间也快要过春节了，最后提前祝大家春节快乐！</p>
+
+<hr />
+
+<p><a href="https://web.archive.org/web/20210514134020/https://void-shana.moe/category/linux/archlinux">archlinux</a>, <a href="https://web.archive.org/web/20210514134020/https://void-shana.moe/category/kernel">Kernel</a>, <a href="https://web.archive.org/web/20210514134020/https://void-shana.moe/category/linux">Linux</a> <a href="https://web.archive.org/web/20210514134020/https://void-shana.moe/tag/archlinux">archlinux</a>, <a href="https://web.archive.org/web/20210514134020/https://void-shana.moe/tag/kernel">kernel</a>, <a href="https://web.archive.org/web/20210514134020/https://void-shana.moe/tag/linux">linux</a>, <a href="https://web.archive.org/web/20210514134020/https://void-shana.moe/tag/qemu">qemu</a></p>
+
+<hr />
+<h2 id="historical-comments">Historical Comments</h2>
+<ol>
+  <li>
+    <p><img src="https://web.archive.org/web/20210514134020im_/https://secure.gravatar.com/avatar/3e3c1cb94b9ad3551cd9d43f2e52e105?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong><a href="https://web.archive.org/web/20210514134020/https://blog.lilydjwg.me/">依云</a></strong> says: 
+<a href="https://web.archive.org/web/20210514134020/https://void-shana.moe/linux/running-arch-linux-with-customized-kernel-in-qemu.html#comment-516">January 31, 2019 at 10:15 pm</a>
+你也弄这个了呀。我当初是直接在 kvm 虚拟机里装自己打包的 linux-lily 内核来着，为了测试打的包是不是好的。
+<a href="https://web.archive.org/web/20210514134020/https://blog.lilydjwg.me/2014/7/15/arch-kvm-in-arch.52548.html">https://blog.lilydjwg.me/2014/7/15/arch-kvm-in-arch.52548.html</a></p>
+
+    <ol>
+      <li><img src="https://web.archive.org/web/20210514134020im_/https://secure.gravatar.com/avatar/5612f7d51961a8e49efb43a5e4cf18a6?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>VOID001</strong> says: 
+ <a href="https://web.archive.org/web/20210514134020/https://void-shana.moe/linux/running-arch-linux-with-customized-kernel-in-qemu.html#comment-518">January 31, 2019 at 10:46 pm</a>
+ ww， 原来百合喵早就弄过啦，窝这边是准备用来研究内核写代码测试用，以前都是用我的小本本直接启动，那样感觉太费劲了，然后 buildroot 的方案我还没搞明白，于是就选用了这样一个方案，目前来说感觉还是很好用的，等我什么时候搞清楚 buildroot 我再总结下他的使用方法</li>
+    </ol>
+  </li>
+  <li>
+    <p><img src="https://web.archive.org/web/20210514134020im_/https://secure.gravatar.com/avatar/5612f7d51961a8e49efb43a5e4cf18a6?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>VOID001</strong> says: 
+<a href="https://web.archive.org/web/20210514134020/https://void-shana.moe/linux/running-arch-linux-with-customized-kernel-in-qemu.html#comment-520">February 1, 2019 at 10:41 am</a>
+David Gao 也安利我了virt-manager 我用来跑 Win10 了（</p>
+  </li>
+  <li>
+    <p><img src="https://web.archive.org/web/20210514134020im_/https://secure.gravatar.com/avatar/5612f7d51961a8e49efb43a5e4cf18a6?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>VOID001</strong> says: 
+<a href="https://web.archive.org/web/20210514134020/https://void-shana.moe/linux/running-arch-linux-with-customized-kernel-in-qemu.html#comment-520">February 1, 2019 at 10:41 am</a>
+David Gao 也安利我了virt-manager 我用来跑 Win10 了（</p>
+  </li>
+</ol>]]></content><author><name></name></author><summary type="html"><![CDATA[The content is recoverd from Wordpress Blog, for more details please check HERE]]></summary></entry><entry><title type="html">proxychains-ng 原理解析</title><link href="https://void-shana.moe//posts/proxychains-ng" rel="alternate" type="text/html" title="proxychains-ng 原理解析" /><published>2018-08-14T00:00:00+08:00</published><updated>2018-08-14T00:00:00+08:00</updated><id>https://void-shana.moe//posts/proxychains-ng</id><content type="html" xml:base="https://void-shana.moe//posts/proxychains-ng"><![CDATA[<p>The content is recoverd from Wordpress Blog, for more details please check <a href="recover-my-blog">HERE</a></p>
+
+<h5 id="august-14-2018"><a href="https://web.archive.org/web/20210514123224/https://void-shana.moe/linux/proxychains-ng.html" title="5:04 pm">August 14, 2018</a></h5>
+<p><a href="https://web.archive.org/web/20210514123224/https://void-shana.moe/author/void001" title="View all posts by VOID001">VOID001</a> Comments  <a href="https://web.archive.org/web/20210514123224/https://void-shana.moe/linux/proxychains-ng.html#comments">12 comments</a></p>
+
+<p>Preface
+The content is recoverd from Wordpress Blog, for more details please check <a href="recover-my-blog">HERE</a></p>
+
+<p>提起 proxychains 相信大家都并不陌生，这个程序可以方便的让你在终端使用 SOCKS5, SOCKS4, HTTP 等协议代理网络访问，而不需要为了转换 SOCKS5 协议再搭建一个 HTTP 的代理来使用 http_proxy, https_proxy 这些 Shell 内置的环境变量来访问网络了。不过 proxychains 并不对所有的应用程序有效，一个典型的情况是 Golang 编写的 程序是无法使用 proxychains 进行代理的。在使用 proxychains 的时候会报这样的错误:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>dial tcp 224.0.0.1:80: connect: network is unreachable
+</code></pre></div></div>
+
+<p>下面就通过对 proxychains-ng 的原理的解析，来解答这个问题，并且为 golang 编写的程序提供一个解决方案。</p>
+
+<p>Shared Libraries
+The content is recoverd from Wordpress Blog, for more details please check <a href="recover-my-blog">HERE</a></p>
+
+<p>Linux 下的很多程序都依赖着多种多样的<strong>动态链接库(shared library)</strong>，使用动态链接库既可以节省磁盘的空间大小（你编译出来的程序不会特别大），同时也会节省程序的运行内存，多个共享动态链接库的进程只需要一份库在内存中。若是静态链接的话，则每一个进程都要带一份库。通过 ls -l /usr/lib (根据发行版不同路径可能会有不同)即可看到很多动态链接库。</p>
+
+<p>首先来介绍几个动态链接库的基本知识，大家会发现这个文件夹下面有很多链接，比如</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>lrwxrwxrwx   1 root root        19 Aug  7 00:22 libzmf-0.0.so -&gt; libzmf-0.0.so.0.0.2                                                                                                                         
+lrwxrwxrwx   1 root root        19 Aug  7 00:22 libzmf-0.0.so.0 -&gt; libzmf-0.0.so.0.0.2
+</code></pre></div></div>
+
+<p>有两个指向 libzmf-0.0.so.0.0.2 的软连接这些文件的名字很相似，那么具体都代表什么呢，下面就来进行说明。</p>
+
+<p>对于一个动态链接库来说，有三个名字，分别是 soname, linkername 和 realname</p>
+
+<ul>
+  <li>linkername: libxxx.so (没有任何版本号) 在安装 library 的时候建立，是一个链接到 realname 的软链接</li>
+  <li>soname: libxxx.so.(VER) (带有版本号) 在安装 library 的时候建立，是一个链接到 realname 的软链接</li>
+  <li>realname: libxxx.so.(VER).(MINOR).[RELEASE] (必须带有版本号和 minor number, 可选的为带有 release number) 是该 library 本身</li>
+</ul>
+
+<p>对于上面这个例子来说 libzmf-0.0 的 soname 就是 libzmf-0.0.so.0， linkername 是 libzmf-0.0.so，realname 是 libzmf-0.0.so.0.0.2</p>
+
+<p>当一个程序指定要链接的动态链接库的时候，他们指定的是这个链接库的 soname, 而不是 realname 这样的考量是在链接库更新 minor number 的时候，不需要对这个程序进行重新链接，至于为什么没有用 linkername 是为了 ABI 兼容性考虑，当一个库升级后 ABI 发生了变化时，依赖这个库的程序必须要重新编译才能使用，否则就会因为 ABI 不兼容导致段错误等问题发生。因而当一个库的 MAJOR VER NUMBER 更新时，说明它有 ABI Breaking Change. 而当一个库只是更新了 MINOR/RELEASE NUMBER 的时候 这时我们不需要进行重新编译。</p>
+
+<p>Dynamic Loading Progress
+The content is recoverd from Wordpress Blog, for more details please check <a href="recover-my-blog">HERE</a></p>
+
+<p>本文重点在于讲解 proxychains 的原理，因而对 loader 部分只提及相关部分，下述过程并不是完整的程序加载过程</p>
+
+<p>在 Linux 上所有动态链接的程序都会链接一个 ld-linux-xxxx.so(下面简称 ld-linux.so) 的动态链接库，这个动态链接库很特殊，它会解析该程序所需的 shared libraires ，并且加载他们以及他们必要的依赖 我们可以通过查看每一个动态链接的程序的 Dynamic Section 了解到其依赖的链接库都是什么。比如这是 curl <strong>直接依赖</strong>的动态链接库:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>╰─(´・ω・)つ  readelf -a /usr/bin/curl | grep NEEDED
+ 0x0000000000000001 (NEEDED)             Shared library: [libcurl.so.4]
+ 0x0000000000000001 (NEEDED)             Shared library: [libpthread.so.0]
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+</code></pre></div></div>
+
+<p>注意这些只是 “直接依赖”, ld-linux.so 还会去解析这些依赖的 library 的依赖是什么，最后得到我们通过 ldd 看到的输出结果</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>╰─(´・ω・)つ  ldd /usr/bin/curl                                                                                                                                                                          1 ↵
+        linux-vdso.so.1 (0x00007fffb9f6a000)
+        libcurl.so.4 =&gt; /usr/lib/libcurl.so.4 (0x00007fd1cbbd6000)
+        libpthread.so.0 =&gt; /usr/lib/libpthread.so.0 (0x00007fd1cbbb5000)
+        libc.so.6 =&gt; /usr/lib/libc.so.6 (0x00007fd1cb9f1000)
+        libnghttp2.so.14 =&gt; /usr/lib/libnghttp2.so.14 (0x00007fd1cb7cc000)
+        libidn2.so.0 =&gt; /usr/lib/libidn2.so.0 (0x00007fd1cb5af000)
+        libpsl.so.5 =&gt; /usr/lib/libpsl.so.5 (0x00007fd1cb39f000)
+        libssl.so.1.1 =&gt; /usr/lib/libssl.so.1.1 (0x00007fd1cb133000)
+        libcrypto.so.1.1 =&gt; /usr/lib/libcrypto.so.1.1 (0x00007fd1cacb6000)
+        libgssapi\_krb5.so.2 =&gt; /usr/lib/libgssapi\_krb5.so.2 (0x00007fd1caa68000)
+        libkrb5.so.3 =&gt; /usr/lib/libkrb5.so.3 (0x00007fd1ca77f000)
+        libk5crypto.so.3 =&gt; /usr/lib/libk5crypto.so.3 (0x00007fd1ca54c000)
+        libcom\_err.so.2 =&gt; /usr/lib/libcom\_err.so.2 (0x00007fd1ca348000)
+        libz.so.1 =&gt; /usr/lib/libz.so.1 (0x00007fd1ca12f000)
+        /lib64/ld-linux-x86-64.so.2 =&gt; /usr/lib64/ld-linux-x86-64.so.2 (0x00007fd1cc0e0000)
+        libunistring.so.2 =&gt; /usr/lib/libunistring.so.2 (0x00007fd1c9daf000)
+        libdl.so.2 =&gt; /usr/lib/libdl.so.2 (0x00007fd1c9daa000)
+        libkrb5support.so.0 =&gt; /usr/lib/libkrb5support.so.0 (0x00007fd1c9b9d000)
+        libkeyutils.so.1 =&gt; /usr/lib/libkeyutils.so.1 (0x00007fd1c9999000)
+        libresolv.so.2 =&gt; /usr/lib/libresolv.so.2 (0x00007fd1c997e000)
+
+</code></pre></div></div>
+
+<p>对于每一个 library 是如何解析到其路径的具体过程，可以通过查看 man 8 ld-linux  了解具体过程</p>
+
+<h2 id="special-environment-variable-ld_preload">Special Environment Variable: LD_PRELOAD</h2>
+
+<p>在 ld-linux(8) 的 Man Page 里 我们可以看到这样一个环境变量的说明: LD_PRELOAD</p>
+
+<blockquote>
+  <p>A list of additional, user-specified, ELF shared objects to be loaded before all others.</p>
+
+</blockquote>
+
+<p>当 secure-execution 模式没有开启的时候 指定 在 LD_PRELOAD 里的 shared library 会比其他任何 shared libray 都先加载. 这就给我们去伪造, hook 调用函数提供了途径。</p>
+
+<p>背景知识铺垫到这里就结束了，接下来我们将结合 proxychains-ng 的代码介绍其原理</p>
+
+<p>Proxychains-ng 的原理
+The content is recoverd from Wordpress Blog, for more details please check <a href="recover-my-blog">HERE</a></p>
+
+<p>简单来说, proxychains-ng 就是 hook 了 libc 里提供的基本网络通讯函数</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>//╰─(´・ω・)つ  cat libproxychains.c  | grep SETUP
+#define SETUP\_SYM(X) do { if (! true\_ ## X ) true\_ ## X = load\_sym( # X, X ); } while(0)
+        SETUP\_SYM(connect);
+        SETUP\_SYM(sendto);
+        SETUP\_SYM(gethostbyname);
+        SETUP\_SYM(getaddrinfo);
+        SETUP\_SYM(freeaddrinfo);
+        SETUP\_SYM(gethostbyaddr);
+        SETUP\_SYM(getnameinfo);
+        SETUP\_SYM(close);
+        SETUP\_SYM(\_\_xnet\_connect);
+
+</code></pre></div></div>
+
+<p>这些包在 SETUP_SYM 里的函数(在 SOLARIS 中 connect 是 __xnet_connect)会被 proxychains 进行 hook， 然后通过内置的 hook 函数进行后续代理操作。</p>
+
+<p>我们查看 <a href="https://web.archive.org/web/20210514123224/https://github.com/rofl0r/proxychains-ng/blob/1c8f8e4e7e31e64131f5f5e031f216b557f7b5ed/src/libproxychains.c#L442">src/libproxychains.c</a> 可以发现，这个 libproxychains.c 含有 connect, sendto, … 这些函数, 而且函数的签名和 connect(3) sendto(3)… 的都一样</p>
+
+<p>这就是 proxychains 的原理所在，proxychains 将这些函数重写一份，并且 export libproxychains 为 shared library. 当该 Library 被 preload (设置在 LD_PRELOAD) 里的时候，则在程序调用 connect , close 等网络相关的 libc 函数的时候，就会被 proxychains 接管。</p>
+
+<p>我们在代码里还能看到很多的 true_xxx 函数, 他们只有函数调用没有定义, 在 src/core.h 中定义这些符号从外部引用</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>// src/core.h
+extern connect\_t true\_connect;
+
+</code></pre></div></div>
+
+<p>为了进一步理解 proxychains 我们需要弄清楚 这个 true_xxx 从何而来, 因为这些函数被钩子函数们屡次调用。我们现在就回到 SETUP_SYM 这个宏的定义上来</p>
+
+<p>SETUP_SYM 这个宏就是 true_xxx 系列函数的解析的关键</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>#define SETUP\_SYM(X) do { if (! true\_ ## X ) true\_ ## X = load\_sym( # X, X ); } while(0)
+
+</code></pre></div></div>
+
+<p>我们以 connect 为例，展开一下这个宏: SETUP_SYM(connect) 被展开为</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code> do { if (! true\_connect ) true\_connect = load\_sym( "connect", connect ); } while(0);
+
+</code></pre></div></div>
+
+<p>这里 宏 invoke 了 load_sym 函数, 该函数<a href="https://web.archive.org/web/20210514123224/https://github.com/rofl0r/proxychains-ng/blob/1c8f8e4e7e31e64131f5f5e031f216b557f7b5ed/src/libproxychains.c#L83">如下</a> :</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>static void* load\_sym(char* symname, void* proxyfunc) {
+
+	void *funcptr = dlsym(RTLD\_NEXT, symname);
+
+	if(!funcptr) {
+		fprintf(stderr, "Cannot load symbol '%s' %s\n", symname, dlerror());
+		exit(1);
+	} else {
+		PDEBUG("loaded symbol '%s'" " real addr %p  wrapped addr %p\n", symname, funcptr, proxyfunc);
+	}
+	if(funcptr The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog) proxyfunc) {
+		PDEBUG("circular reference detected, aborting!\n");
+		abort();
+	}
+	return funcptr;
+}
+</code></pre></div></div>
+
+<p>load_sym 调用了 dlsym 并且将 dlsym 返回值返回，然后通过上面的宏我们就知道 true_xxx 就会得到这个返回的地址 也就是函数地址。另一问题就是，这个返回的地址意味什么？相信很多人已经猜到了，true_xxx 这些函数就应该是指向那些没有被 hook 的原始网络函数的。我们现在查看 dlsym 的具体调用的含义。通过 dlsym(3) 我们知道了， dlsym 的两个参数分别为 dlopen 打开的 handle, 以及要解析的 symbol name。而  RTLD_NEXT 和 RTLD_DEFAULT 是两个 pseudo-handle。我们这里贴一下 RTLD_NEXT 的解释的全文</p>
+
+<blockquote>
+  <p>RTLD_NEXT</p>
+
+  <p>Find the next occurrence of the desired symbol in the search order after the current object. This allows one to provide a wrapper around a function in another shared object, so that,</p>
+
+  <p>for example, the definition of a function in a preloaded shared object (see LD_PRELOAD in ld.so(8)) can find and invoke the “real” function provided in another shared object (or for</p>
+
+  <p>that matter, the “next” definition of the function in cases where there are multiple layers of preloading).</p>
+
+</blockquote>
+
+<p>可以知道，这个 pseudo-handle 会通过解析当前的 library search path 找到 <strong>第二个</strong>symbol name 等于 symname 的函数，manpage 里还贴心的给出了一个应用场景，就是在这种 LD_PRELOAD 的情况下想要加载 “real” 函数的时候，这样可以方便的进行加载。</p>
+
+<p>我们再来查看一下 hooked connect 函数的<a href="https://web.archive.org/web/20210514123224/https://github.com/rofl0r/proxychains-ng/blob/1c8f8e4e7e31e64131f5f5e031f216b557f7b5ed/src/libproxychains.c#L459">具体逻辑</a></p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>	if(!((fam  The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog) AF\_INET || fam The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog) AF\_INET6) &amp;&amp; socktype The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog) SOCK\_STREAM))
+		return true\_connect(sock, addr, len);
+</code></pre></div></div>
+
+<p>通过这个判断可以看到，当该链接不满足 TCP 链接的条件的时候，是会去调用 libc 的 connect 函数继续下去</p>
+
+<p><a href="https://web.archive.org/web/20210514123224/https://github.com/rofl0r/proxychains-ng/blob/1c8f8e4e7e31e64131f5f5e031f216b557f7b5ed/src/libproxychains.c#L499">这里</a></p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>	ret = connect\_proxy\_chain(sock,
+				  dest\_ip,
+				  htons(port),
+				  proxychains\_pd, proxychains\_proxy\_count, proxychains\_ct, proxychains\_max\_chain);
+</code></pre></div></div>
+
+<p>就是 proxychains 将链接转到了自己的 SOCKS 链接逻辑里的调用。这之后的一切就随 proxychains 操作了。</p>
+
+<p>看到这里相信大家对 proxychains 如何做到让其他程序能够代理链接有一定认识了。那么还有一个小问题没有解答，在 ArchLinux 和其他一些发行版上使用 proxychains 的时候我们也没有手动设置 LD_PRELOAD 这个环境变量，他是如何被设置的呢? 这里我们只需要去看 <a href="https://web.archive.org/web/20210514123224/https://github.com/rofl0r/proxychains-ng/blob/1c8f8e4e7e31e64131f5f5e031f216b557f7b5ed/src/main.c#L139">https://github.com/rofl0r/proxychains-ng/blob/1c8f8e4e7e31e64131f5f5e031f216b557f7b5ed/src/main.c#L139</a></p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>#define LD\_PRELOAD\_ENV "LD\_PRELOAD"
+/* all historic implementations of BSD and linux dynlinkers seem to support
+   space as LD\_PRELOAD separator, with colon added only recently.
+   we use the old syntax for maximum compat */
+#define LD\_PRELOAD\_SEP " "
+#endif
+	char *old\_val = getenv(LD\_PRELOAD\_ENV);
+	snprintf(buf, sizeof(buf), LD\_PRELOAD\_ENV "=%s/%s%s%s",
+	         prefix, dll\_name,
+	         /* append previous LD\_PRELOAD content, if existent */
+	         old\_val ? LD\_PRELOAD\_SEP : "",
+	         old\_val ? old\_val : "");
+	putenv(buf);
+	execvp(argv[start\_argv], &amp;argv[start\_argv]);
+	perror("proxychains can't load process....");
+</code></pre></div></div>
+
+<p>这里通过 putenv 设置了 LD_PRELOAD 的环境变量，然后执行了 execvp 调用命令行后面指定的程序。</p>
+
+<p>通过上述 code reading 我们可以得出结论: <strong>proxychains 是通过 LD_PRELOAD 让自己在其他所有 shared library 之前被解析, 并导出 libc 的网络功能函数 connect, close, sendto, … 等函数, 通过此方法 hook libc API , 来达到让其他的程序能够通过其进行 SOCKS5 proxy 访问的效果</strong></p>
+
+<p>那么我们来尝试一下吧~ 我们来 hook 一下 open 函数看看会出现什么事情</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>*
+ * Try to hook open function and disguise the system
+ *
+ */
+
+#include &lt;stdio.h&gt;
+#include &lt;errno.h&gt;
+#include &lt;sys/socket.h&gt;
+
+int open(const char *path, int oflag, ...) {
+    printf("Hooked open!\n");
+    return 1;
+}
+
+</code></pre></div></div>
+
+<p>我们使用以下参数进行编译</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>gcc -fPIE -c open.c &amp;&amp; gcc -shared -o libopen.so open.o
+
+</code></pre></div></div>
+
+<p>我们让 open 恒定返回 fd = 0 即为进程默认打开的标准输入 (/dev/pts) 我们执行 LD_PRELOAD=./libopen.so cat /usr/bin/vim 程序先是输出了一行 “Hooked open” 然后就 block 在了那里，好像在等待读入输入一样，而这个操作的原始行为应该是 cat 出来 /usr/bin/vim 这个 binary file 然后导致 terminal 乱码(逃 因而我们现在可以说，我们成功的 hook 了 libc 的函数 \w/ 感兴趣的朋友可以试试把上述代码的返回值修改为大于2的值，然后看看会发生什么。</p>
+
+<p>Why Some Programs (e.g. Golang) Cannot Use It?
+The content is recoverd from Wordpress Blog, for more details please check <a href="recover-my-blog">HERE</a></p>
+
+<p>通过上文我们知道了，很多的 golang 程序都是静态链接的程序，当然不涉及到任何 shared library preload, 对于这些程序来说我们没有办法让他们使用 proxychains.</p>
+
+<p>但是最初的这个奇怪的报错是什么?</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>dial tcp 224.0.0.1:80: connect: network is unreachable
+</code></pre></div></div>
+
+<p>我们 grep 224 发现这个的确出现在了 proxychains-ng 的代码中，而且还是一个 DNS 相关的变量, 我们可以猜测 对于涉及网络请求的golang程序，可能有一部分函数被 proxychains hook 了(Thanks to <a href="https://web.archive.org/web/20210514123224/https://ekyu.moe/">@Equim</a>)。为了验证我们的猜想，我们给 proxychains 的每一个 Hook 的函数加上调试输出，下面放出一个 demo 程序，分别使用 golang 的 http.Get 和 net.Dial 两个方式向 myip.ipip.net 请求自己的 IP 地址</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>package main
+
+import (
+	"bufio"
+	"fmt"
+	"io/ioutil"
+	"net"
+	"net/http"
+)
+
+func \_dial() {
+	conn, err := net.Dial("tcp", "myip.ipip.net:80")
+	if err != nil {
+		fmt.Printf("dial error: %s\n", err)
+		return
+	}
+
+	reqstr := "GET / HTTP/1.1\r\nHost: myip.ipip.net\r\nUser-Agent: curl/7.61.0\r\nAccept: */*\r\n\r\n"
+	\_, err = fmt.Fprintf(conn, reqstr)
+	if err != nil {
+		fmt.Printf("read error: %s\n", err)
+		return
+	}
+	b := make([]byte, 100000)
+	\_, err = bufio.NewReader(conn).Read(b)
+	if err != nil {
+		fmt.Printf("read error: %s\n", err)
+		return
+	}
+
+	fmt.Printf("%s\n", b)
+}
+
+func \_http() {
+	resp, err := http.Get("http://myip.ipip.net")
+	if err != nil {
+		fmt.Printf("http.get: %s", err)
+		return
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Printf("readall: %s", err)
+		return
+	}
+	fmt.Printf("%s", body)
+}
+
+func main() {
+	println("DIAL")
+	\_dial()
+	println("HTTP")
+	\_http()
+}
+
+</code></pre></div></div>
+
+<p>我们使用 go build 上面的代码 -&gt; demo 然后 通过增加了调试信息的 Proxychains 执行 demo 得到如下输出:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>╰─(´・ω・)つ  ./proxychains4 -q ~/playground/go/go\_connect/go\_connect\_gc
+DIAL
+DBG: getaddrinfo
+...
+DBG: freeaddrinfo
+dial error: dial tcp 224.0.0.1:80: connect: network is unreachable
+HTTP
+DBG: getaddrinfo
+...
+DBG: freeaddrinfo
+http.get: Get http://myip.ipip.net: dial tcp 224.0.0.1:80: connect: network is unreachable%
+</code></pre></div></div>
+
+<p>我们发现，这个 demo 程序的 getaddrinfo 和 freeaddrinfo 被 hook 到了 proxychains 其他函数没有。因而我们的猜想得到了验证，具体可以去参考 golang source code (这里暂时不进行讨论)</p>
+
+<p>A Way For Golang Programs to Use Proxychains
+The content is recoverd from Wordpress Blog, for more details please check <a href="recover-my-blog">HERE</a></p>
+
+<p>这个问题的答案就是使用 <a href="https://web.archive.org/web/20210514123224/https://golang.org/doc/install/gccgo">gccgo</a></p>
+
+<p>我们先来看效果</p>
+
+<p>不使用 proxychains 直接运行 编译得到的 demo</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>DIAL
+HTTP/1.1 200 OK
+Date: Tue, 14 Aug 2018 13:09:06 GMT
+Content-Type: text/plain; charset=utf-8
+Content-Length: 67
+Connection: keep-alive
+X-Via-JSL: dca9b80,-
+Set-Cookie: \_\_jsluid=xxxxxxxxxxxxxxxxxxxxxxxxxxx; max-age=31536000; path=/; HttpOnly
+X-Cache: bypass
+
+当前 IP：*.*.*.*  来自于：中国 XXXXXXXXXXXXXXXXXXX
+
+HTTP
+当前 IP：*.*.*.*  来自于：中国 XXXXXXXXXXXXXXXXXXX
+
+</code></pre></div></div>
+
+<p>使用 proxychains 代理后</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>DIAL
+HTTP/1.1 200 OK
+Date: Tue, 14 Aug 2018 13:10:09 GMT
+Content-Type: text/plain; charset=utf-8
+Content-Length: 73
+Connection: keep-alive
+Set-Cookie: \_\_cfduid=xxxxxxxxxxxxxxxxxxxxxxx; expires=Wed, 14-Aug-19 13:10:09 GMT; path=/; domain=.ipip.net; HttpOnly
+Server: cloudflare
+CF-RAY: 4xxxxxxxxxxxxxxx-NRT
+
+当前 IP：*.*.*.*  来自于：日本  XXXXXXXXXXXXXXXXXX
+
+HTTP 
+当前 IP：*.*.*.*  来自于：日本 XXXXXXXXXXXXXXXXXX
+</code></pre></div></div>
+
+<p>可以看出，这次 proxychains 生效了! Hooray</p>
+
+<p>那么为什么生效了呢?</p>
+
+<p>我们对比两个不同 compiler 编译出来的 go binary 的 shared library 可以发现</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>╰─(´・ω・)つ  ldd go\_connect\_shared go\_connect\_gc 
+go\_connect\_shared:
+        linux-vdso.so.1 (0x00007ffdcdf00000)
+        libgo.so.13 =&gt; /usr/lib/libgo.so.13 (0x00007f368872e000)
+        libm.so.6 =&gt; /usr/lib/libm.so.6 (0x00007f36885a9000)
+        libgcc\_s.so.1 =&gt; /usr/lib/libgcc\_s.so.1 (0x00007f368858f000)
+        libc.so.6 =&gt; /usr/lib/libc.so.6 (0x00007f36883cb000)
+        /lib64/ld-linux-x86-64.so.2 =&gt; /usr/lib64/ld-linux-x86-64.so.2 (0x00007f3689fe6000)
+        libz.so.1 =&gt; /usr/lib/libz.so.1 (0x00007f36881b4000)
+        libpthread.so.0 =&gt; /usr/lib/libpthread.so.0 (0x00007f3688193000)
+go\_connect\_gc:
+        linux-vdso.so.1 (0x00007ffe4bf5f000)
+        libpthread.so.0 =&gt; /usr/lib/libpthread.so.0 (0x00007fb99f7d6000)
+        libc.so.6 =&gt; /usr/lib/libc.so.6 (0x00007fb99f612000)
+        /lib64/ld-linux-x86-64.so.2 =&gt; /usr/lib64/ld-linux-x86-64.so.2 (0x00007fb99f858000)
+
+</code></pre></div></div>
+
+<p>他们两个都 link 了 libc(内含有 connect 函数) 为什么一个会接受 proxy 一个不能呢? 猜测可以是, connect 函数在 gc compiler 版的 go 中调用的不是 libc 的 connect, 而在 gccgo 里则是调用了这个 我们需要通过阅读源码来弄清楚 connect 函数是来自哪里的。</p>
+
+<h2 id="gcgo-compiler下的调用">GC(Go Compiler)下的调用</h2>
+
+<p>我们先来看 connect 在 gc (我们熟知的默认 go compiler) 下 connect 的调用链路:</p>
+
+<p>在 &lt;go_src&gt;/src/syscall 下有一系列的 syscall 文件, 对于 Linux 64 bit 我们仅需要看 src/syscall/syscall_linux_amd64.go 这个文件，这里我们发现了</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>//sys	Statfs(path string, buf *Statfs\_t) (err error)
+//sys	SyncFileRange(fd int, off int64, n int64, flags int) (err error)
+//sys	Truncate(path string, length int64) (err error)
+//sys	accept(s int, rsa *RawSockaddrAny, addrlen *\_Socklen) (fd int, err error)
+//sys	accept4(s int, rsa *RawSockaddrAny, addrlen *\_Socklen, flags int) (fd int, err error)
+//sys	bind(s int, addr unsafe.Pointer, addrlen \_Socklen) (err error)
+//sys	connect(s int, addr unsafe.Pointer, addrlen \_Socklen) (err error)
+//sys	fstatat(fd int, path string, stat *Stat\_t, flags int) (err error) = SYS\_NEWFSTATAT
+//sysnb	getgroups(n int, list *\_Gid\_t) (nn int, err error)
+//sysnb	setgroups(n int, list *\_Gid\_t) (err error)
+//sys	getsockopt(s int, level int, name int, val unsafe.Pointer, vallen *\_Socklen) (err error)
+//sys	setsockopt(s int, level int, name int, val unsafe.Pointer, vallen uintptr) (err error)
+//sysnb	socket(domain int, typ int, proto int) (fd int, err error)
+//sysnb	socketpair(domain int, typ int, proto int, fd *[2]int32) (err error)
+//sysnb	getpeername(fd int, rsa *RawSockaddrAny, addrlen *\_Socklen) (err error)
+//sysnb	getsockname(fd int, rsa *RawSockaddrAny, addrlen *\_Socklen) (err error)
+//sys	recvfrom(fd int, p []byte, flags int, from *RawSockaddrAny, fromlen *\_Socklen) (n int, err error)
+</code></pre></div></div>
+
+<p>这样一段含有 connect 的签名的注释，每一行的 //sys //sysnb 会被 perl 脚本 src/syscall/mksyscall.pl 给展开， connect 展开后是这样的</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>func connect(s int, addr unsafe.Pointer, addrlen \_Socklen) (err error) {
+        \_, \_, e1 := Syscall(SYS\_CONNECT, uintptr(s), uintptr(addr), uintptr(addrlen))
+        if e1 != 0 {
+                err = errnoErr(e1)
+        }
+        return
+}
+</code></pre></div></div>
+
+<p>查看 Syscall 的实现 我们跟踪到了 src/syscall/asm_linux_amd64.s 内的代码</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>TEXT ·Syscall(SB),NOSPLIT,$0-56
+	CALL	runtime·entersyscall(SB)
+	MOVQ	a1+8(FP), DI
+	MOVQ	a2+16(FP), SI
+	MOVQ	a3+24(FP), DX
+	MOVQ	$0, R10
+	MOVQ	$0, R8
+	MOVQ	$0, R9
+	MOVQ	trap+0(FP), AX	// syscall entry
+	SYSCALL
+	CMPQ	AX, $0xfffffffffffff001
+	JLS	ok
+	MOVQ	$-1, r1+32(FP)
+	MOVQ	$0, r2+40(FP)
+	NEGQ	AX
+	MOVQ	AX, err+48(FP)
+	CALL	runtime·exitsyscall(SB)
+	RET
+ok:
+	MOVQ	AX, r1+32(FP)
+	MOVQ	DX, r2+40(FP)
+	MOVQ	$0, err+48(FP)
+	CALL	runtime·exitsyscall(SB)
+	RET
+</code></pre></div></div>
+
+<p>可以看到这里是通过直接调用 syscall 进行了系统调用，而非使用了 libc 提供的 connect 函数。因而我们在这种情况下是无法让 connect 被 proxychains 给 hook 的</p>
+
+<h2 id="gccgo-下的调用">GCCGO 下的调用</h2>
+
+<p>我们再来看一下 gccgo 对 connect 的调用链路:</p>
+
+<p>在 gccgo/libgo/go/syscall 下我们查看文件 socket_posix.go 可以看到</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>//sys   bind(fd int, sa *RawSockaddrAny, len Socklen\_t) (err error)
+//bind(fd \_C\_int, sa *RawSockaddrAny, len Socklen\_t) \_C\_int
+
+//sys   connect(s int, addr *RawSockaddrAny, addrlen Socklen\_t) (err error)
+//connect(s \_C\_int, addr *RawSockaddrAny, addrlen Socklen\_t) \_C\_int
+
+</code></pre></div></div>
+
+<p>同样，这段代码也会被一个 mksyscall.awk 的宏展开为:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>// Automatically generated wrapper for connect/connect
+//extern connect
+func c\_connect(s \_C\_int, addr *RawSockaddrAny, addrlen Socklen\_t) \_C\_int
+func connect(s int, addr *RawSockaddrAny, addrlen Socklen\_t) (err error) {
+        Entersyscall()
+        \_r := c\_connect(\_C\_int(s), addr, Socklen\_t(addrlen))
+        var errno Errno
+        setErrno := false
+        if \_r &lt; 0 {
+                errno = GetErrno()
+                setErrno = true
+        }
+        Exitsyscall()
+        if setErrno {
+                err = errno
+        }
+        return
+}
+
+</code></pre></div></div>
+
+<p>我们可以看到, 这里使用了 extern directive 将函数 c_connect 引用指向了外部的 connect 符号,  通过查看 libgo 的依赖关系(ldd) 我们发现 libgo 依赖 libc, libc 提供了 connect 因而 gccgo 编译出来的程序的 connect 是通过 libc 调用，而不是内部自行解决了，所以我们可以通过 proxychains 来进行 hook。</p>
+
+<h2 id="验证">验证</h2>
+
+<p>最后再来验证一下我们的这个结论。  对于查看 shared lib 的相关内部过程，可以用一个神奇的环境变量 LD_DEBUG, 我们使用 LD_DEBUG=bindings 来展示出每一个符号的 bind 过程，查看两个不同的 go compiler 编译出的程序在 symbol resolution 时有什么不同。（都已经使用 LD_PRELOAD preload 了 libproxychains4.so )</p>
+
+<p><img src="https://web.archive.org/web/20210514123224im_/https://void-shana.moe/wp-content/uploads/2018/08/gcc-1-1024x292.png" alt="" />For GCCGO
+<img src="https://web.archive.org/web/20210514123224im_/https://void-shana.moe/wp-content/uploads/2018/08/gc-1-1024x374.png" alt="" />For GC
+我们可以看出，在 gccgo 编译的版本中， libgo 需要的外部 symbol connect 被 bind 到了 GLIBC connect 而在 gc 编译的版本中则不存在这样的 binding. 因而我们得出结论 gccgo 编译的代码可以被 proxychain hook</p>
+
+<p>Reference
+The content is recoverd from Wordpress Blog, for more details please check <a href="recover-my-blog">HERE</a></p>
+
+<ul>
+  <li>ld-linux man page</li>
+  <li>dlsym(3) man page</li>
+  <li>http://tldp.org/HOWTO/Program-Library-HOWTO/shared-libraries.html</li>
+  <li>https://github.com/rofl0r/proxychains-ng</li>
+</ul>
+
+<p>Misc
+The content is recoverd from Wordpress Blog, for more details please check <a href="recover-my-blog">HERE</a></p>
+
+<p>遗留问题: 在查看 LD_DEBUG=bindings 的时候，我们可以看到这样一段奇怪的 bind: binding file /usr/lib/libproxychains4.so [0] to /usr/lib/libpthread.so.0 [0]: normal symbol `connect’ proxychains 的 connect 竟然 bind 到了 libpthread 上，这让我很费解，尝试了 LD_DEBUG 看 curl 的 binding 也是最后到了 libpthread 上，这里就让我产生了一个悬而未解的问题: 莫非 proxychains 不仅仅 hook 了 libc 还 hook 了 libpthread? 我查看了 LD_DEBUG=1 curl xxx.cn 的输出，发现所有的 connect symbol 都是解析到了 libpthread.so 上，也许，所有的 connect 都没有走 libc 而是走了 libpthread?z 这就是另一个问题了。</p>
+
+<p>后记: 因为最近在准备出国留学，备考申请事情多得很忙，几乎没有多少时间来研究技术，因而博客搁置的时间远比 3 个月长，甚至有的朋友留言说博主已经凉了，在此对大家的关注表示感谢，因为很多事情导致了博客没有更新。在备考结束后博客还会保持以前的进度持续更新的。同时感谢 <a href="https://web.archive.org/web/20210514123224/https://ekyu.moe/">@Equim</a> 在撰写本文时提供的种种帮助，关于她说的另一个问题我在这里没有讲到，也是和 proxychains 有关的一个问题，链接在这里: <a href="https://web.archive.org/web/20210514123224/https://hackerone.com/reports/361269">https://hackerone.com/reports/361269</a> 感兴趣的各位可以去看看</p>
+
+<p>然后我就要继续去准备 GRE 了(x</p>
+
+<hr />
+
+<p><a href="https://web.archive.org/web/20210514123224/https://void-shana.moe/category/linux/c">C</a>, <a href="https://web.archive.org/web/20210514123224/https://void-shana.moe/category/linux/kernel-linux">Kernel</a>, <a href="https://web.archive.org/web/20210514123224/https://void-shana.moe/category/linux">Linux</a> <a href="https://web.archive.org/web/20210514123224/https://void-shana.moe/tag/c">C</a>, <a href="https://web.archive.org/web/20210514123224/https://void-shana.moe/tag/kernel">kernel</a>, <a href="https://web.archive.org/web/20210514123224/https://void-shana.moe/tag/linux">linux</a></p>
+
+<hr />
+<h2 id="historical-comments">Historical Comments</h2>
+<ol>
+  <li>
+    <p><img src="https://web.archive.org/web/20210514123224im_/https://secure.gravatar.com/avatar/13b998737e96dd10135326cacc26985c?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>ZackXu</strong> says: 
+<a href="https://web.archive.org/web/20210514123224/https://void-shana.moe/linux/proxychains-ng.html#comment-443">August 14, 2018 at 5:07 pm</a>
+娜娜更新了！</p>
+
+    <ol>
+      <li><img src="https://web.archive.org/web/20210514123224im_/https://secure.gravatar.com/avatar/5612f7d51961a8e49efb43a5e4cf18a6?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>VOID001</strong> says: 
+ <a href="https://web.archive.org/web/20210514123224/https://void-shana.moe/linux/proxychains-ng.html#comment-446">August 15, 2018 at 10:20 am</a>
+ 终于更新了(x</li>
+    </ol>
+  </li>
+  <li>
+    <p><img src="https://web.archive.org/web/20210514123224im_/https://secure.gravatar.com/avatar/1896080d53de450a79795654ceac2dbb?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong><a href="https://web.archive.org/web/20210514123224/https://thunix.org/~neo_chen/">Neo_Chen</a></strong> says: 
+<a href="https://web.archive.org/web/20210514123224/https://void-shana.moe/linux/proxychains-ng.html#comment-444">August 14, 2018 at 8:53 pm</a>
+終於更新了，耶！</p>
+
+    <ol>
+      <li><img src="https://web.archive.org/web/20210514123224im_/https://secure.gravatar.com/avatar/5612f7d51961a8e49efb43a5e4cf18a6?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>VOID001</strong> says: 
+ <a href="https://web.archive.org/web/20210514123224/https://void-shana.moe/linux/proxychains-ng.html#comment-447">August 15, 2018 at 10:21 am</a>
+ 最近好忙QvQ</li>
+    </ol>
+  </li>
+  <li>
+    <p><img src="https://web.archive.org/web/20210514123224im_/https://secure.gravatar.com/avatar/e466883dea9a8b501f9788066cd021de?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong><a href="https://web.archive.org/web/20210514123224/https://ikk.me/">kookxiang</a></strong> says: 
+<a href="https://web.archive.org/web/20210514123224/https://void-shana.moe/linux/proxychains-ng.html#comment-445">August 15, 2018 at 9:59 am</a>
+夏娜大佬！跪了</p>
+
+    <ol>
+      <li><img src="https://web.archive.org/web/20210514123224im_/https://secure.gravatar.com/avatar/5612f7d51961a8e49efb43a5e4cf18a6?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>VOID001</strong> says: 
+ <a href="https://web.archive.org/web/20210514123224/https://void-shana.moe/linux/proxychains-ng.html#comment-448">August 15, 2018 at 10:22 am</a>
+ kk 才是大佬! 我是萌新!</li>
+    </ol>
+  </li>
+  <li>
+    <p><img src="https://web.archive.org/web/20210514123224im_/https://secure.gravatar.com/avatar/5612f7d51961a8e49efb43a5e4cf18a6?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>VOID001</strong> says: 
+<a href="https://web.archive.org/web/20210514123224/https://void-shana.moe/linux/proxychains-ng.html#comment-450">August 15, 2018 at 10:50 pm</a>
+现在不是草稿了呀，是因为当时手残点错了(</p>
+  </li>
+  <li>
+    <p><img src="https://web.archive.org/web/20210514123224im_/https://secure.gravatar.com/avatar/64718fe14af5b212ad2428ce59affcb2?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong><a href="https://web.archive.org/web/20210514123224/https://huihui.moe/">灰灰</a></strong> says: 
+<a href="https://web.archive.org/web/20210514123224/https://void-shana.moe/linux/proxychains-ng.html#comment-461">August 20, 2018 at 12:53 pm</a>
+好耶！博主热了！</p>
+
+    <ol>
+      <li><img src="https://web.archive.org/web/20210514123224im_/https://secure.gravatar.com/avatar/5612f7d51961a8e49efb43a5e4cf18a6?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>VOID001</strong> says: 
+ <a href="https://web.archive.org/web/20210514123224/https://void-shana.moe/linux/proxychains-ng.html#comment-462">August 20, 2018 at 12:57 pm</a>
+ 好耶是灰灰! 扑(</li>
+    </ol>
+  </li>
+  <li>
+    <p><img src="https://web.archive.org/web/20210514123224im_/https://secure.gravatar.com/avatar/43fdc497850cead58be4e6219c7d96e8?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong><a href="https://web.archive.org/web/20210514123224/https://a-wing.top/">a-wing</a></strong> says: 
+<a href="https://web.archive.org/web/20210514123224/https://void-shana.moe/linux/proxychains-ng.html#comment-489">September 27, 2018 at 9:11 am</a>
+夏娜姐姐好棒～</p>
+
+    <ol>
+      <li><img src="https://web.archive.org/web/20210514123224im_/https://secure.gravatar.com/avatar/5612f7d51961a8e49efb43a5e4cf18a6?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>VOID001</strong> says: 
+ <a href="https://web.archive.org/web/20210514123224/https://void-shana.moe/linux/proxychains-ng.html#comment-490">September 27, 2018 at 9:20 am</a>
+ 好耶，是夏娜妹妹/</li>
+    </ol>
+  </li>
+  <li>
+    <p><img src="https://web.archive.org/web/20210514123224im_/https://secure.gravatar.com/avatar/3e3c1cb94b9ad3551cd9d43f2e52e105?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong><a href="https://web.archive.org/web/20210514123224/https://blog.lilydjwg.me/">依云</a></strong> says: 
+<a href="https://web.archive.org/web/20210514123224/https://void-shana.moe/linux/proxychains-ng.html#comment-517">January 31, 2019 at 10:37 pm</a>
+libpthread.so 确实包括了一份 connect，以及其他二三十个常见函数。在 glibc 的 glibc/nptl/Makefile 文件中可以看到，这些函数是为了兼容性才存在于 libpthread.so 里的。</p>
+  </li>
+  <li>
+    <p><img src="https://web.archive.org/web/20210514123224im_/https://secure.gravatar.com/avatar/3e3c1cb94b9ad3551cd9d43f2e52e105?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong><a href="https://web.archive.org/web/20210514123224/https://blog.lilydjwg.me/">依云</a></strong> says: 
+<a href="https://web.archive.org/web/20210514123224/https://void-shana.moe/linux/proxychains-ng.html#comment-517">January 31, 2019 at 10:37 pm</a>
+libpthread.so 确实包括了一份 connect，以及其他二三十个常见函数。在 glibc 的 glibc/nptl/Makefile 文件中可以看到，这些函数是为了兼容性才存在于 libpthread.so 里的。</p>
+  </li>
+</ol>]]></content><author><name></name></author><summary type="html"><![CDATA[The content is recoverd from Wordpress Blog, for more details please check HERE]]></summary></entry><entry><title type="html">Kernel Bootup Page Table Initialize Process(x86\_64)</title><link href="https://void-shana.moe//posts/kernel-bootup-page-table-initialize-processx86_64" rel="alternate" type="text/html" title="Kernel Bootup Page Table Initialize Process(x86\_64)" /><published>2017-11-23T00:00:00+08:00</published><updated>2017-11-23T00:00:00+08:00</updated><id>https://void-shana.moe//posts/kernel-bootup-page-table-initialize-processx86_64</id><content type="html" xml:base="https://void-shana.moe//posts/kernel-bootup-page-table-initialize-processx86_64"><![CDATA[<p>The content is recoverd from Wordpress Blog, for more details please check <a href="recover-my-blog">HERE</a></p>
+
+<h5 id="november-23-2017"><a href="https://web.archive.org/web/20210514134902/https://void-shana.moe/linux/kernel-bootup-page-table-initialize-processx86_64.html" title="2:21 am">November 23, 2017</a></h5>
+<p><a href="https://web.archive.org/web/20210514134902/https://void-shana.moe/author/void001" title="View all posts by VOID001">VOID001</a> Comments  <a href="https://web.archive.org/web/20210514134902/https://void-shana.moe/linux/kernel-bootup-page-table-initialize-processx86_64.html#comments">3 comments</a></p>
+
+<p>This article will provide detailed information about the kernel bootup page table setup.</p>
+
+<p>In a brief view, the kernel setup page table in three steps:</p>
+
+<ol>
+  <li>Setup the 4GB identity mapping</li>
+  <li>Setup 64bit mode page table early_top_pgt</li>
+  <li>Setup 64bit mode page table init_top_pgt</li>
+</ol>
+
+<p>The last two steps are both higher mapping: Map the 512MB physical address to virtual address 0xffff80000000 – 0xffff80000000 + 512MB.</p>
+
+<p>Next, we will talk about the details. We will use the 4.14 version code to explain the process.</p>
+
+<p><em>You need to know the IA32e paging mechanism and relocation to read the article. The Intel manual has a good explaination of IA32e paging</em></p>
+
+<p><a href="https://web.archive.org/web/20210514134902/https://github.com/torvalds/linux/blob/v4.14/arch/x86/boot/compressed/head_64.S">https://github.com/torvalds/linux/blob/v4.14/arch/x86/boot/compressed/head_64.S</a></p>
+
+<h2 id="before-decompression">Before decompression</h2>
+
+<p>When the kernel is being loaded, it is either decompressed by a third-party bootloader like GRUB2 or by the kernel itself. Now we will talk about the second condition. The code started from arch/x86/boot/header.S . It is in 16bit real mode at the time. Then in code arch/x86/boot/compressed/head_64.S  We setup the first page table in 32bit mode. We need this page table to take us to do take us to 64bit mode.</p>
+
+<p>The following code is the set-up process</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>/*
+ * Prepare for entering 64 bit mode
+ */
+
+	/* Load new GDT with the 64bit segments using 32bit descriptor */
+	addl	%ebp, gdt+2(%ebp)
+	lgdt	gdt(%ebp)
+
+	/* Enable PAE mode */
+	movl	%cr4, %eax
+	orl	$X86\_CR4\_PAE, %eax
+	movl	%eax, %cr4
+
+ /*
+  * Build early 4G boot pagetable
+  */
+	/*
+	 * If SEV is active then set the encryption mask in the page tables.
+	 * This will insure that when the kernel is copied and decompressed
+	 * it will be done so encrypted.
+	 */
+	call	get\_sev\_encryption\_bit
+	xorl	%edx, %edx
+	testl	%eax, %eax
+	jz	1f
+	subl	$32, %eax	/* Encryption bit is always above bit 31 */
+	bts	%eax, %edx	/* Set encryption mask for page tables */
+1:
+
+	/* Initialize Page tables to 0 */
+	leal	pgtable(%ebx), %edi
+	xorl	%eax, %eax
+	movl	$(BOOT\_INIT\_PGT\_SIZE/4), %ecx
+	rep	stosl
+
+	/* Build Level 4 */
+	leal	pgtable + 0(%ebx), %edi
+	leal	0x1007 (%edi), %eax
+	movl	%eax, 0(%edi)
+	addl	%edx, 4(%edi)
+
+	/* Build Level 3 */
+	leal	pgtable + 0x1000(%ebx), %edi
+	leal	0x1007(%edi), %eax
+	movl	$4, %ecx
+1:	movl	%eax, 0x00(%edi)
+	addl	%edx, 0x04(%edi)
+	addl	$0x00001000, %eax
+	addl	$8, %edi
+	decl	%ecx
+	jnz	1b
+
+	/* Build Level 2 */
+	leal	pgtable + 0x2000(%ebx), %edi
+	movl	$0x00000183, %eax
+	movl	$2048, %ecx
+1:	movl	%eax, 0(%edi)
+	addl	%edx, 4(%edi)
+	addl	$0x00200000, %eax
+	addl	$8, %edi
+	decl	%ecx
+	jnz	1b
+
+	/* Enable the boot page tables */
+	leal	pgtable(%ebx), %eax
+	movl	%eax, %cr3
+</code></pre></div></div>
+
+<p>Notice that from the comment above. %ebx contain the address where we move kernel to make a safe decompression. Which means we should treat %ebx as an offset to the compiled binary. The compiled binary start at 0. So we fix-up the difference to reach the real physical address.</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>	/* Build Level 4 */
+	leal	pgtable + 0(%ebx), %edi
+	leal	0x1007 (%edi), %eax
+	movl	%eax, 0(%edi)
+	addl	%edx, 4(%edi)
+</code></pre></div></div>
+
+<p>The above code setup Top level page directory. This only set the lowest page directory entry to (1007 + pgtable). This is a pointer to the next level page table. And next level page table start at 0x1000 + pgtable. The last line adds %edx to 4+%edi will set encryption masks if SEV is active. Currently, we can omit this line.</p>
+
+<p>Then we look at the next level.</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>	/* Build Level 3 */
+	leal	pgtable + 0x1000(%ebx), %edi
+	leal	0x1007(%edi), %eax
+	movl	$4, %ecx
+1:	movl	%eax, 0x00(%edi)
+	addl	%edx, 0x04(%edi)
+	addl	$0x00001000, %eax
+	addl	$8, %edi
+	decl	%ecx
+	jnz	1b
+</code></pre></div></div>
+
+<p>Here, we can see we set up four entries. and each entry point to another page directory.</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>	/* Build Level 2 */
+	leal	pgtable + 0x2000(%ebx), %edi
+	movl	$0x00000183, %eax
+	movl	$2048, %ecx
+1:	movl	%eax, 0(%edi)
+	addl	%edx, 4(%edi)
+	addl	$0x00200000, %eax
+	addl	$8, %edi
+	decl	%ecx
+	jnz	1b
+</code></pre></div></div>
+
+<p>This is the last level of page directory, these entry will point to a physical page frame directly. Now let’s take a look at the code. It sets up 2048 entries. Each entry with a Page Flag R/W = 1 U/S = 0 PS = 1. This means the page is read / write by kernel only and its size is 2MB. Each PTE(Page Table Entry) is a 8 Byte block data. So one page can contain at most 512 entries. Here kernel setup 4 pages of Level 2 Page Directory. The following image show the current page table structure.</p>
+
+<p>In total we have 2048 * 2MB = 4GB physical address, identity mapped to 0 – 4GB linear address.</p>
+
+<p><img src="https://web.archive.org/web/20210514134902im_/https://void-shana.moe/wp-content/uploads/2017/11/aaa-e1511368338472-1024x768.jpg" alt="" /></p>
+
+<p> </p>
+
+<p>Then we use a long return to switch to 64bit mode.</p>
+
+<p><img src="https://web.archive.org/web/20210514134902im_/https://void-shana.moe/wp-content/uploads/2017/11/Screenshot_20171123_003421-1024x503.png" alt="" /></p>
+
+<p>Kernel push the startup_64 and CS register to stack, then perform a long return to enter 64bit mode.  And then after copy the compressed kernel, we jump to symbol relocated</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>/*
+ * Jump to the relocated address.
+ */
+	leaq	relocated(%rbx), %rax
+	jmp	*%rax
+</code></pre></div></div>
+
+<p>In the relocated code, we do the kernel decompression.</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>/*
+ * Do the extraction, and jump to the new kernel..
+ */
+	pushq	%rsi			/* Save the real mode argument */
+	movq	%rsi, %rdi		/* real mode address */
+	leaq	boot\_heap(%rip), %rsi	/* malloc area for uncompression */
+	leaq	input\_data(%rip), %rdx  /* input\_data */
+	movl	$z\_input\_len, %ecx	/* input\_len */
+	movq	%rbp, %r8		/* output target address */
+	movq	$z\_output\_len, %r9	/* decompressed length, end of relocs */
+	call	extract\_kernel		/* returns kernel location in %rax */
+	popq	%rsi
+</code></pre></div></div>
+
+<p>The decompressed kernel is compiled at high address(we take ffffffff81000000 for example). But now we don’t have the correct page table to do the mapping. Fortunately, the <strong>extract_kernel</strong> function returns the physical address of the decompressed kernel. (Which is %ebp, equals to %ebx). After decompression, %rax contains the kernel physical start address. We jump there to perform the further setup.</p>
+
+<h2 id="start-execution-in-vmlinux">Start execution in vmlinux</h2>
+
+<p>We now arrived at arch/x86/kernel/head_64.S. Before we continue, we must notice two things first.</p>
+
+<ul>
+  <li>After decompression, the kernel is placed at physical address %rbp (If we do not set CONFIG_RELOCATABLE it’s equal to 0x1000000</li>
+</ul>
+
+<p>).</p>
+<ul>
+  <li>After decompression, we now in the kernel code compiled with the virtual address ffffffff81000000(as we mentioned above).</li>
+</ul>
+
+<p>So here is a big pitfall. We cannot access ANY of the symbols in vmlinux currently. Because we only have a basic identity mapping now. But we need to visit the variables. How can we make it? The kernel uses a trick here, I will show it below</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>static void \_\_head *fixup\_pointer(void *ptr, unsigned long physaddr)
+{
+	return ptr - (void *)\_text + (void *)physaddr;
+}
+
+</code></pre></div></div>
+
+<p>This function fixup the symbol virtual address to the real physical address.</p>
+
+<p><strong>“Current Valid Addr” = “Virtual Hi Addr” – “Kernel Virtual Address Base Addr” + “%rax Extracted kernel physical address”.</strong></p>
+
+<p>Now we continue reading the arch/x86/kernel/head_64.S  assembly code, this is where we landed from arch/x86/compressed/head_64.S</p>
+
+<p>The enrty is startup_64:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>startup\_64:
+	/*
+	 * At this point the CPU runs in 64bit mode CS.L = 1 CS.D = 0,
+	 * and someone has loaded an identity mapped page table
+	 * for us.  These identity mapped page tables map all of the
+	 * kernel pages and possibly all of memory.
+	 *
+	 * %rsi holds a physical pointer to real\_mode\_data.
+	 *
+	 * We come here either directly from a 64bit bootloader, or from
+	 * arch/x86/boot/compressed/head\_64.S.
+	 *
+	 * We only come here initially at boot nothing else comes here.
+	 *
+	 * Since we may be loaded at an address different from what we were
+	 * compiled to run at we first fixup the physical addresses in our page
+	 * tables and then reload them.
+	 */
+
+	/* Set up the stack for verify\_cpu(), similar to initial\_stack below */
+	leaq	(\_\_end\_init\_task - SIZEOF\_PTREGS)(%rip), %rsp
+
+	/* Sanitize CPU configuration */
+	call verify\_cpu
+
+	/*
+	 * Perform pagetable fixups. Additionally, if SME is active, encrypt
+	 * the kernel and retrieve the modifier (SME encryption mask if SME
+	 * is active) to be added to the initial pgdir entry that will be
+	 * programmed into CR3.
+	 */
+	leaq	\_text(%rip), %rdi
+	pushq	%rsi
+	call	\_\_startup\_64
+	popq	%rsi
+
+	/* Form the CR3 value being sure to include the CR3 modifier */
+	addq	$(early\_top\_pgt - \_\_START\_KERNEL\_map), %rax
+	jmp 1f
+</code></pre></div></div>
+
+<p>In this article, we talk about self loading, instead of using a third party 64bit bootloader like GRUB. So as the comment said, we come here from arch/x86/boot/compressed/head_64.S. If we config the kernel with CONFIG_RELOCATABLE, the kernel won’t run at the place we compiled, page table fixup need to be performed. The page table is fixed in <strong>__startup_64</strong></p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>unsigned long \_\_head \_\_startup\_64(unsigned long physaddr,
+				  struct boot\_params *bp)
+{
+	unsigned long load\_delta, *p;
+	unsigned long pgtable\_flags;
+	pgdval\_t *pgd;
+	p4dval\_t *p4d;
+	pudval\_t *pud;
+	pmdval\_t *pmd, pmd\_entry;
+	int i;
+	unsigned int *next\_pgt\_ptr;
+
+	/* Is the address too large? */
+	if (physaddr &gt;&gt; MAX\_PHYSMEM\_BITS)
+		for (;;);
+
+	/*
+	 * Compute the delta between the address I am compiled to run at
+	 * and the address I am actually running at.
+	 */
+	load\_delta = physaddr - (unsigned long)(\_text - \_\_START\_KERNEL\_map);
+
+	/* Is the address not 2M aligned? */
+	if (load\_delta &amp; ~PMD\_PAGE\_MASK)
+		for (;;);
+
+	/* Activate Secure Memory Encryption (SME) if supported and enabled */
+	sme\_enable(bp);
+
+	/* Include the SME encryption mask in the fixup value */
+	load\_delta += sme\_get\_me\_mask();
+
+	/* Fixup the physical addresses in the page table */
+
+	pgd = fixup\_pointer(&amp;early\_top\_pgt, physaddr);
+	pgd[pgd\_index(\_\_START\_KERNEL\_map)] += load\_delta;
+
+	if (IS\_ENABLED(CONFIG\_X86\_5LEVEL)) {
+		p4d = fixup\_pointer(&amp;level4\_kernel\_pgt, physaddr);
+		p4d[511] += load\_delta;
+	}
+
+        /* Omit some fixup code for simplicity */
+
+	return sme\_get\_me\_mask();
+}
+
+</code></pre></div></div>
+
+<p>We compute the load_delta, and fixup the early_top_pgt. Now we just assume we don’t configure the kernel with CONFIG_RELOCATABLE. Then we can look at the page table built at compile time. First we look at the top level <strong>early_top_pgt.</strong>It set only the last entry point to level3 page table. which means only virtual address start with 0xff8000000000 will be valid.</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>NEXT\_PAGE(early\_top\_pgt)
+	.fill	511,8,0
+#ifdef CONFIG\_X86\_5LEVEL
+	.quad	level4\_kernel\_pgt - \_\_START\_KERNEL\_map + \_PAGE\_TABLE\_NOENC
+#else
+	.quad	level3\_kernel\_pgt - \_\_START\_KERNEL\_map + \_PAGE\_TABLE\_NOENC
+#endif
+</code></pre></div></div>
+
+<p>Now we look at the next level (We do not use 5 Level Paging).</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>NEXT\_PAGE(level3\_kernel\_pgt)
+	.fill	L3\_START\_KERNEL,8,0
+	/* (2^48-(2*1024*1024*1024)-((2^39)*511))/(2^30) = 510 */
+	.quad	level2\_kernel\_pgt - \_\_START\_KERNEL\_map + \_KERNPG\_TABLE\_NOENC
+	.quad	level2\_fixmap\_pgt - \_\_START\_KERNEL\_map + \_PAGE\_TABLE\_NOENC
+</code></pre></div></div>
+
+<p>This level we have two entries, one for kernel address space. One for fixmap address space, fixmap address space is used for IO mapping, DMA, etc. Now we just look at the fixmap address space. It’s at index 510. in binary mode 0b111111110. Combine with the top level we get a smaller linear address space. Only address start from 0xffff80000000 is valid.</p>
+
+<p>Then it’s the last level page directory. <strong>level2_kernel_pgt</strong></p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>NEXT\_PAGE(level2\_kernel\_pgt)
+	/*
+	 * 512 MB kernel mapping. We spend a full page on this pagetable
+	 * anyway.
+	 *
+	 * The kernel code+data+bss must not be bigger than that.
+	 *
+	 * (NOTE: at +512MB starts the module area, see MODULES\_VADDR.
+	 *  If you want to increase this then increase MODULES\_VADDR
+	 *  too.)
+	 */
+	PMDS(0, \_\_PAGE\_KERNEL\_LARGE\_EXEC,
+		KERNEL\_IMAGE\_SIZE/PMD\_SIZE)
+</code></pre></div></div>
+
+<p>This level is a mapping to physical address 0 – 512MB (it maps more than that, but we only need 512MB) So we get the current mapping then.</p>
+
+<p><strong>Linear: 0xffff80000000 – 0xffff80000000 + 512MB The content is recoverd from Wordpress Blog, for more details please check <a href="recover-my-blog">HERE</a>&gt; Physical: 0 – 512MB</strong></p>
+
+<p>You can use a gdb to print the page table and debug it in your own. Here is a simple “it works!” script for parsing the page directory entry</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>#!/usr/bin/python
+
+import argparse
+
+def main():
+    parser = argparse.ArgumentParser(description='Page Table Entry Decoder\n Convert into human-friendly mode')
+    parser.add\_argument('value', type=str)
+    args = parser.parse\_args()
+    value = (int(args.value, 16))
+    P = value &amp; 0x0000000000000001
+    if not P:
+        print("PE = 0, page not present")
+        return
+    else:
+        print("PE = 1")
+
+    RW = value &amp; 0x0000000000000002
+    if not RW:
+        print("R/W = 0, Only Read access")
+    else:
+        print("R/W = 1, Read/Write access")
+
+    US = value &amp; 0x0000000000000004
+    if not US:
+        print("U/S = 0, only for kernel access")
+    else:
+        print("U/S = 1, user/kernel access")
+    
+    PS = (value &amp; 0x0000000000000080) &gt;&gt; 7
+    PHY = ((value &gt;&gt; 12) &amp; 0x000ffffffffff) &lt;&lt; 12
+
+    print("PS = {:d}".format(PS))
+    print("PHYADDR = {:x}".format(PHY))
+
+
+if \_\_name\_\_ The content is recoverd from Wordpress Blog, for more details please check [HERE](recover-my-blog) '\_\_main\_\_':
+    main()
+
+</code></pre></div></div>
+
+<p>Kernel load the early_top_pgt into cr3 using the following code</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>    addq	$(early\_top\_pgt - \_\_START\_KERNEL\_map), %rax
+    ...
+    addq	phys\_base(%rip), %rax
+    movq	%rax, %cr3
+</code></pre></div></div>
+
+<p>The current page table structure is shown below:</p>
+
+<p><img src="https://web.archive.org/web/20210514134902im_/https://void-shana.moe/wp-content/uploads/2017/11/pasted-image-0-e1511372882463.png" alt="" /></p>
+
+<p>Now we are free to visit any kernel symbol without to force convert the address using <strong>fixup_address</strong>or something else. We can go further to the init/main.c code.</p>
+
+<p>We use a long return to get to get to x86_64_start_kernel</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>	pushq	$.Lafter\_lret	# put return address on stack for unwinder
+	xorq	%rbp, %rbp	# clear frame pointer
+	movq	initial\_code(%rip), %rax
+	pushq	$\_\_KERNEL\_CS	# set correct cs
+	pushq	%rax
+</code></pre></div></div>
+
+<p><strong>initial_code</strong> here is defined as <strong>x86_64_start_kernel</strong>.</p>
+
+<p> </p>
+
+<h2 id="moving-to-initmainc">Moving to init/main.c</h2>
+
+<p>We are now at arch/x86/kernel/head64.c and in function <strong>x86_64_start_kernel</strong></p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>asmlinkage \_\_visible void \_\_init x86\_64\_start\_kernel(char * real\_mode\_data)
+{
+	/*
+	 * Build-time sanity checks on the kernel image and module
+	 * area mappings. (these are purely build-time and produce no code)
+	 */
+	BUILD\_BUG\_ON(MODULES\_VADDR &lt; \_\_START\_KERNEL\_map);
+
+        /* Omit some initialization code for simplicity */
+
+	/* set init\_top\_pgt kernel high mapping*/
+	init\_top\_pgt[511] = early\_top\_pgt[511];
+
+	x86\_64\_start\_reservations(real\_mode\_data);
+}
+</code></pre></div></div>
+
+<p>We set up <strong>init_top_pgt[511]</strong> same as <strong>early_top_pgt[511]</strong>  <strong>. init_top_pgt</strong> is the final kernel page table. From <strong>x86_64_start_reservations</strong>we get to <strong>start_kernel</strong>This is a function located at init/main.c</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>asmlinkage \_\_visible void \_\_init start\_kernel(void)
+{
+        /* Omit some code for simplicity */
+
+	boot\_cpu\_init();
+	page\_address\_init();
+	pr\_notice("%s", linux\_banner);
+	setup\_arch(&amp;command\_line);
+
+        /* Omit some code for simplicity */
+
+	rest\_init();
+}
+</code></pre></div></div>
+
+<p>After calling <strong>setup_arch</strong>, CR3 is loaded with init_top_pgt. Then the kernel page table will not change. I wonder if there is a change to switch kernel page table from 2MB size physical page to 4KB physical page, but it seems that the CR3 remained unchanged, and I examined the page entries, they remain unchanged, too. Even the code has executed into <strong>rest_init</strong> then do_idle</p>
+
+<p>The following function is a simple debug function to output the current CR3 register since GDB cannot get the CR3 register value, I just print it out to see when it changed.</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>asmlinkage \_\_visible unsigned long shana\_debug\_cr3(void) {
+    unsigned long cr3\_value = 0xffffffff;
+    asm volatile("mov %%cr3, %0"
+            : "=r"(cr3\_value));
+    printk("shana\_debug\_cr3: %x", cr3\_value);
+    return cr3\_value;
+}
+</code></pre></div></div>
+
+<p> </p>
+
+<hr />
+
+<p><a href="https://web.archive.org/web/20210514134902/https://void-shana.moe/category/kernel">Kernel</a>, <a href="https://web.archive.org/web/20210514134902/https://void-shana.moe/category/linux">Linux</a></p>
+
+<hr />
+<h2 id="historical-comments">Historical Comments</h2>
+<ol>
+  <li>
+    <p><img src="https://web.archive.org/web/20210514134902im_/https://secure.gravatar.com/avatar/5aa864692767e0d284fc73adc5c9f83d?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>068089dy</strong> says: 
+<a href="https://web.archive.org/web/20210514134902/https://void-shana.moe/linux/kernel-bootup-page-table-initialize-processx86_64.html#comment-346">November 25, 2017 at 10:48 am</a>
+不明觉厉</p>
+
+    <ol>
+      <li><img src="https://web.archive.org/web/20210514134902im_/https://secure.gravatar.com/avatar/5612f7d51961a8e49efb43a5e4cf18a6?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>VOID001</strong> says: 
+ <a href="https://web.archive.org/web/20210514134902/https://void-shana.moe/linux/kernel-bootup-page-table-initialize-processx86_64.html#comment-347">November 25, 2017 at 10:57 am</a>
+ 就是 linux 内核的页表设置过程啦～ x86_64 的</li>
+    </ol>
+  </li>
+  <li>
+    <p><img src="https://web.archive.org/web/20210514134902im_/https://secure.gravatar.com/avatar/2567491c82a9e1fd9bb32a00682d83a3?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>Theo</strong> says: 
+<a href="https://web.archive.org/web/20210514134902/https://void-shana.moe/linux/kernel-bootup-page-table-initialize-processx86_64.html#comment-616">May 26, 2019 at 10:11 pm</a>
+请问说init_top_pgt就是最终页表，但是我在Systems.map里面看到它的地址是ffffffff83a00000，可直接手动走cr3页表里面翻译得到的地址却都是形如0xffff880003c01067这样的地址，并不是Systems.map这些地址，请问你当时的0xffff80000000 – 0xffff80000000 + 512MB这个范围是怎么得到的呢？</p>
+  </li>
+  <li>
+    <p><img src="https://web.archive.org/web/20210514134902im_/https://secure.gravatar.com/avatar/2567491c82a9e1fd9bb32a00682d83a3?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>Theo</strong> says: 
+<a href="https://web.archive.org/web/20210514134902/https://void-shana.moe/linux/kernel-bootup-page-table-initialize-processx86_64.html#comment-616">May 26, 2019 at 10:11 pm</a>
+请问说init_top_pgt就是最终页表，但是我在Systems.map里面看到它的地址是ffffffff83a00000，可直接手动走cr3页表里面翻译得到的地址却都是形如0xffff880003c01067这样的地址，并不是Systems.map这些地址，请问你当时的0xffff80000000 – 0xffff80000000 + 512MB这个范围是怎么得到的呢？</p>
+  </li>
+</ol>]]></content><author><name></name></author><summary type="html"><![CDATA[The content is recoverd from Wordpress Blog, for more details please check HERE]]></summary></entry><entry><title type="html">Kernel Driver btusb Overview</title><link href="https://void-shana.moe//posts/kernel-driver-btusb-overview" rel="alternate" type="text/html" title="Kernel Driver btusb Overview" /><published>2017-11-02T00:00:00+08:00</published><updated>2017-11-02T00:00:00+08:00</updated><id>https://void-shana.moe//posts/kernel-driver-btusb-overview</id><content type="html" xml:base="https://void-shana.moe//posts/kernel-driver-btusb-overview"><![CDATA[<p>The content is recoverd from Wordpress Blog, for more details please check <a href="recover-my-blog">HERE</a></p>
+
+<h5 id="november-2-2017"><a href="https://web.archive.org/web/20210225082831/https://void-shana.moe/linux/kernel-driver-btusb-overview.html" title="1:59 pm">November 2, 2017</a></h5>
+<p><a href="https://web.archive.org/web/20210225082831/https://void-shana.moe/author/void001" title="View all posts by VOID001">VOID001</a> Comments  <a href="https://web.archive.org/web/20210225082831/https://void-shana.moe/linux/kernel-driver-btusb-overview.html#respond">0 Comment</a></p>
+
+<p>Function</p>
+
+<h3 id="btusb_probe">btusb_probe</h3>
+
+<p>btusb_probe is use for hot plug-in for bluetooth usb generic controller, here will explain the function in detail.</p>
+
+<p>First is an interface check mechanism</p>
+
+<p>This special condition is used for supporting apple Macbook 12,8 (2015 early). According to the normal specification, the main interface for USB is 0, and audio (isochronous) is 1, but apple made a change on it, changing the main interface to 2 and audio to 3. The “<strong>bInterfaceNumber !=2</strong> ” is for checking hardware for the special case in Apple series product. The macro <strong>BTUSB_IFNUM_2</strong> is a <em>driver_info</em> flag, for Macbook devices, this flag will be set, else it will be 0. See the <strong>btusb_table</strong> for detail.</p>
+
+<p>Then do further check on blacklist devices, some of the blacklist device is because there are specific driver (e.g bcmxxxx) for the device, so they do not use the generic one called btusb. Some of them just because they are not supported, and other reasons.(Not sure what reason are there)</p>
+
+<p> </p>
+
+<p>Then we allocate memory for structure btusb_data, use this to store data for the USB interface. Also we need to check the memory remained for the allocation. Then we do the real work: set up currrent interface endpoints for interrupt and bulk <strong>(Why only these two?)</strong> It go through all the endpoint in the current interface. We get the current_altsetting to get a list of current active(available) endpoints.</p>
+
+<p> </p>
+
+<p><strong>usb_endpoint_is_int_in</strong> and <strong>usb_endpoint_is_bulk_out</strong>, <strong>usb_endpoint_is_bulk_in</strong> are functions use to know what type of the endpoint is it. These info is use to set up driver data at the end of the call. If none of inter_ep, bulk_tx_ep or bulk_rx_ep is set, it will also result in No Device Error(<strong>ENODEV</strong>)</p>
+
+<p>This part of code is used for URB generation. URB is short for “USB Request Block” According to the Bluetooth v5.0 Specification, When sending an Control URB to AMP, the bRequest field should be 0x2b. Shown in the figure below.</p>
+
+<p> </p>
+
+<p>Currently, for the interface to work with kernel to perform different operations. The driver itself need to be convert to device structure. Use the function named <strong>interface_to_usbdev</strong> Here is a quote from Linux Device Driver 3 :</p>
+
+<p><em>A USB device driver commonly has to convert data from a given</em> <em>struct</em> <em>usb_interface</em> <em>structure into a</em> <em>struct</em> <em>usb_device</em> <em>structure that the USB core needs for a wide range of function calls. To do this, the function interface_to_usbdev is provided. Hopefully, in the future, all USB calls that currently need a</em> <em>struct</em> <em>usb_device</em> <em>will be converted to take a</em> <em>struct</em> <em>usb_interface</em> <em>parameter and will not require the drivers to do the conversion.</em></p>
+
+<p> </p>
+
+<p>Then we continue with the initialize process.</p>
+
+<p> </p>
+
+<p>Here we init the workqueue, <strong>data-&gt;work</strong> and <strong>data-&gt;waker</strong> these are shared workqueue offered by kernel. (Default Shared workqueue). We call <strong>schedule_work(data-&gt;work)</strong> in <strong>btusb_notify</strong> function to submit a job into workqueue and <strong>data-&gt;wake</strong>r is also controlled by other functions</p>
+
+<p>Then these init_usb_anchor calls. In my view, is just a sort of data queue, URB request will be queued(anchored) in certain queue, then processed in serial. Then init the spinlock for the device(interface)</p>
+
+<p> </p>
+
+<p>Another special case, for Intel bluetooth usb generic driver, kernel will use special recv handler functions, for other USB generic bluetooth driver, kernel just use the common one.</p>
+
+<p>Then do a lot of device specific set-up, we skip the code and go to the  isochronous setup process.</p>
+
+<p> </p>
+
+<p> </p>
+
+<p>Here, the <strong>usb_driver_claim_interface</strong> is used for set up more than one interface binding to the current device driver. It also happens when this is a isochronous or acm(?) interface, here it’s a isochronous interface</p>
+
+<p>Finally we call <strong>hci_register_dev to register</strong> it , this is one of the function in the Bluetooth Host Controller Interface core function series, from file net/bluetooth/hci/hci_core.c. After that, we set the interface data to intf</p>
+
+<hr />
+
+<p><a href="https://web.archive.org/web/20210225082831/https://void-shana.moe/category/linux/c">C</a>, <a href="https://web.archive.org/web/20210225082831/https://void-shana.moe/category/kernel">Kernel</a>, <a href="https://web.archive.org/web/20210225082831/https://void-shana.moe/category/linux">Linux</a></p>
+
+<hr />
+<h2 id="historical-comments">Historical Comments</h2>
+<p>Post navigation
+—————
+<a href="https://web.archive.org/web/20210225082831/https://void-shana.moe/linux/kernel-bootup-page-table-initialize-processx86_64.html">NEXT<br />
+Kernel Bootup Page Table Initialize Process(x86_64)</a>
+<a href="https://web.archive.org/web/20210225082831/https://void-shana.moe/linux/building-your-own-live-streaming-site-using-nginx-rtmp-video-js.html">PREVIOUS 
+Building your own live streaming site using Nginx RTMP &amp; video.js</a></p>]]></content><author><name></name></author><summary type="html"><![CDATA[The content is recoverd from Wordpress Blog, for more details please check HERE]]></summary></entry><entry><title type="html">Building your own live streaming site using Nginx RTMP &amp;amp; video.js</title><link href="https://void-shana.moe//posts/building-your-own-live-streaming-site-using-nginx-rtmp-video-js" rel="alternate" type="text/html" title="Building your own live streaming site using Nginx RTMP &amp;amp; video.js" /><published>2017-09-12T00:00:00+08:00</published><updated>2017-09-12T00:00:00+08:00</updated><id>https://void-shana.moe//posts/building-your-own-live-streaming-site-using-nginx-rtmp-video-js</id><content type="html" xml:base="https://void-shana.moe//posts/building-your-own-live-streaming-site-using-nginx-rtmp-video-js"><![CDATA[<p>The content is recoverd from Wordpress Blog, for more details please check <a href="recover-my-blog">HERE</a></p>
+
+<h5 id="september-12-2017"><a href="https://web.archive.org/web/20210514123546/https://void-shana.moe/linux/building-your-own-live-streaming-site-using-nginx-rtmp-video-js.html" title="10:27 pm">September 12, 2017</a></h5>
+<p><a href="https://web.archive.org/web/20210514123546/https://void-shana.moe/author/void001" title="View all posts by VOID001">VOID001</a> Comments  <a href="https://web.archive.org/web/20210514123546/https://void-shana.moe/linux/building-your-own-live-streaming-site-using-nginx-rtmp-video-js.html#comments">1 comment</a></p>
+
+<p>As I said in <a href="https://web.archive.org/web/20210514123546/https://twitter.com/VOID_133/status/906175711211167745">twitter</a> I will update my blog at least once a week, so now I am writing this week’s blog (Although this article doesn’t contain too much technical detail) I just built my personal live server, for the trail version on bilibili is expired. And I don’t want to send sensitive personal data to that platform, so I decided to build one on my own.</p>
+
+<p>Previously I built a live stream service using my raspberry pi, and only use the most simple configuration of nginx, and it does not play very well. Now I have bought a shiny new VPS from CAT.NET with my partner onion, it’s awesomely fast and fluent, so I use this server to build my live stream service, including a frontend to play the stream.</p>
+
+<p>The tutorial is here: <a href="https://web.archive.org/web/20210514123546/https://docs.peer5.com/guides/setting-up-hls-live-streaming-server-using-nginx/">https://docs.peer5.com/guides/setting-up-hls-live-streaming-server-using-nginx/</a></p>
+
+<p>The following guide will show how to build one stream server on Archlinux (Yes, archilnux ONLY, but compatible with many other distro), Just follow the basic steps:</p>
+
+<h3 id="setting-up-the-rtmp-streaming-server-with-hls">Setting up the RTMP Streaming Server with HLS</h3>
+
+<ol>
+  <li>Install <code class="language-plaintext highlighter-rouge">nginx-rtmp</code> from AUR (nginx-mainline + nginx-rtmp-module may also works, but I have problems when compiling the module using makepkg)</li>
+  <li>If you have previous nginx configuration, install nginx-rtmp will conflict with nginx, just remove it, no worry about the configuration file you wrote, it will be stored at /etc/nginx/nginx.conf.pacsave</li>
+  <li>If you have a previous installation of nginx, after install <code class="language-plaintext highlighter-rouge">nginx-rtmp</code>  exec the command <code class="language-plaintext highlighter-rouge">mv /etc/nginx/nginx.conf /etc/nginx/nginx.conf.old</code> and <code class="language-plaintext highlighter-rouge">mv /etc/nginx/nginx.conf.pacsave /etc/nginx/nginx.conf</code></li>
+  <li>Then restart the nginx server and reload the daemon <code class="language-plaintext highlighter-rouge">systemctl daemon-reload</code>  &amp;&amp; <code class="language-plaintext highlighter-rouge">systemctl restart nginx.conf</code></li>
+  <li>This restart shouldn’t generate any error except you have error in your previous nginx config</li>
+  <li>Then <strong>create the rtmp.conf file</strong> (or whatever you name it)  example configuration can be found <a href="https://web.archive.org/web/20210514123546/https://github.com/arut/nginx-rtmp-module/wiki/Examples">here</a></li>
+</ol>
+
+<p>Here is my rtmp.conf, remember to include it in nginx.conf OUTSIDE the http block like this:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>http {
+ ...
+}
+
+include rtmp.conf
+</code></pre></div></div>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>rtmp {
+        server {
+                
+
+                max\_connections 100;
+                chunk\_size 4096;
+                ping 30s;
+                notify\_method get;
+
+                application my\_live {
+                        live on;
+                        hls on;
+                        hls\_path /tmp/hls;
+                        hls\_fragment 3s;
+                        hls\_playlist\_length 60s;
+
+                }
+        }
+}
+
+</code></pre></div></div>
+
+<p>Then you can use <a href="https://web.archive.org/web/20210514123546/https://obsproject.com/">OBS</a> or anything else to push to the livestream, in this example, you should push to</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>rtmp://example.com/my\_live
+</code></pre></div></div>
+
+<p>In the key field just write something e.g: test</p>
+
+<p>Remember to <code class="language-plaintext highlighter-rouge">mkdir /tmp/hls</code> before using the live stream</p>
+
+<p> </p>
+
+<h3 id="setting-up-the-live-streamdata-service">Setting up the Live Stream data service</h3>
+
+<p>We need hls.js or videojs with hls supported, I choose the latter one.</p>
+
+<p>create a config in /etc/nginx/sites-available</p>
+
+<p>e.g: live.void-shana.moe.conf</p>
+
+<p>put these lines in the config file</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>server {
+    listen 80;
+
+    location /stream {
+        # Disable cache
+        add\_header Cache-Control no-cache;
+
+        # CORS setup
+        add\_header 'Access-Control-Allow-Origin' '*' always;
+        add\_header 'Access-Control-Expose-Headers' 'Content-Length';
+
+        # allow CORS preflight requests
+        if ($request\_method = 'OPTIONS') {
+            add\_header 'Access-Control-Allow-Origin' '*';
+            add\_header 'Access-Control-Max-Age' 1728000;
+            add\_header 'Content-Type' 'text/plain charset=UTF-8';
+            add\_header 'Content-Length' 0;
+            return 204;
+        }
+
+        types {
+            application/vnd.apple.mpegurl m3u8;
+            video/mp2t ts;
+        }
+
+        alias /tmp/hls;
+    }
+}
+</code></pre></div></div>
+
+<p>Then when you visit https://example.com/stream/test.m3u8 you will get the live stream playlist of live named “test”.</p>
+
+<p>This *.m3u8 file is a text file that describes every segment to play (segments are named in <name>-<id>.ts format), here is a sample file</id></name></p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>#EXTM3U         
+#EXT-X-VERSION:3                 
+#EXT-X-MEDIA-SEQUENCE:0          
+#EXT-X-TARGETDURATION:8          
+#EXT-X-DISCONTINUITY             
+#EXTINF:8.333,  
+test-0.ts       
+#EXTINF:8.333,  
+test-1.ts       
+#EXTINF:8.334,  
+test-2.ts
+</code></pre></div></div>
+
+<p>The videojs / hls.js will recognize format and parse it, fetch *.ts segments from server then play it one by one, making it looks like a live stream.</p>
+
+<h3 id="create-a-webpage-to-show-it">Create a webpage to show it</h3>
+
+<p>I use videojs with hls support for this, just take a look at view-source://live.void-shana.moe/ you can get a video player that works.</p>
+
+<p>See https://github.com/videojs/videojs-contrib-hls#getting-started for more details</p>
+
+<p> </p>
+
+<h3 id="screenshot">Screenshot</h3>
+
+<p><img src="https://web.archive.org/web/20210514123546im_/https://void-shana.moe/wp-content/uploads/2017/09/Spectacle.E22359-1024x640.png" alt="" /></p>
+
+<h3 id="todo">TODO</h3>
+
+<p>I didn’t find any credential configuration when setting up rtmp stream, this will make it dangerous when someone know my rtmp URI. Bad guy can push nasty live stream / video to my site, currently the URI is complex, and cannot be fetched from frontend (I only expose the hls interface). Future will try to support auth</p>
+
+<p> </p>
+
+<p>If you have problems when setting up the live stream service &amp; frontend, just feel free to comment below, I am glad to help</p>
+
+<hr />
+
+<p><a href="https://web.archive.org/web/20210514123546/https://void-shana.moe/category/linux/archlinux">archlinux</a>, <a href="https://web.archive.org/web/20210514123546/https://void-shana.moe/category/linux">Linux</a> <a href="https://web.archive.org/web/20210514123546/https://void-shana.moe/tag/rtmp">rtmp</a>, <a href="https://web.archive.org/web/20210514123546/https://void-shana.moe/tag/video">video</a></p>
+
+<hr />
+<h2 id="historical-comments">Historical Comments</h2>
+<ol>
+  <li>
+    <p><img src="https://web.archive.org/web/20210514123546im_/https://secure.gravatar.com/avatar/fe0faba4dbcdeaec3e701acf14cd47fc?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>Mohammed</strong> says: 
+<a href="https://web.archive.org/web/20210514123546/https://void-shana.moe/linux/building-your-own-live-streaming-site-using-nginx-rtmp-video-js.html#comment-388">April 26, 2018 at 8:00 pm</a>
+thanks for the article .. i can help in auth</p>
+  </li>
+  <li>
+    <p><img src="https://web.archive.org/web/20210514123546im_/https://secure.gravatar.com/avatar/fe0faba4dbcdeaec3e701acf14cd47fc?s=50&amp;d=identicon&amp;r=g" alt="" /> <strong>Mohammed</strong> says: 
+<a href="https://web.archive.org/web/20210514123546/https://void-shana.moe/linux/building-your-own-live-streaming-site-using-nginx-rtmp-video-js.html#comment-388">April 26, 2018 at 8:00 pm</a>
+thanks for the article .. i can help in auth</p>
+  </li>
+</ol>]]></content><author><name></name></author><summary type="html"><![CDATA[The content is recoverd from Wordpress Blog, for more details please check HERE]]></summary></entry></feed>
